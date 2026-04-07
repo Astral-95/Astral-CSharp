@@ -1,0 +1,33 @@
+﻿@using Astral.Network.Tests.Components
+@inject ThemeService Theme
+
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/" />
+    <link rel="stylesheet" href="bootstrap/bootstrap.min.css" />
+    <link rel="stylesheet" href="app.css" />
+	<link rel="stylesheet" href="Astral.Network.Tests.styles.css" />
+    <link rel="icon" type="image/png" href="favicon.png" />
+    <HeadOutlet />
+</head>
+
+<body class="@Theme.CurrentTheme.Body">
+	<div>
+		<script src="_framework/blazor.web.js"></script>
+	</div>
+    <Routes />
+    
+</body>
+
+</html>
+
+@code {
+	protected override void OnInitialized()
+	{
+		Theme.OnChanged += StateHasChanged;
+	}
+}

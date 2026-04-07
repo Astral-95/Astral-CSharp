@@ -1,0 +1,116 @@
+/* --- Layout --- */
+.top-nav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 1rem;
+    height: 3.5rem;
+    background: #1f1f22;
+    border-bottom: 1px solid #333;
+}
+
+/* --- Left: App title --- */
+.app-title {
+    color: #fff;
+    text-decoration: none;
+    font-weight: 600;
+    font-size: 1.1rem;
+}
+
+/* --- Center nav items --- */
+.center-group {
+    display: flex;
+    gap: 1.5rem;
+}
+
+.nav-item {
+    color: #fff !important;
+    text-decoration: none !important;
+    padding: 0.5rem 0.75rem;
+    border-radius: 8px;
+    transition: background 0.15s;
+}
+
+.nav-item:hover {
+    background: rgba(255,255,255,0.05);
+}
+
+.nav-item.active {
+    background: rgba(255,255,255,0.1);
+    position: relative;
+}
+
+.nav-item.active::before {
+    content: "";
+    position: absolute;
+    left: -6px;
+    top: 10%;
+    bottom: 10%;
+    width: 4px;
+    background: #66ccff;
+    border-radius: 2px;
+}
+
+/* --- Right: Theme Toggle --- */
+.theme-toggle {
+    position: relative;
+    display: inline-block;
+    width: 50px;
+    height: 26px;
+}
+
+.theme-toggle input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+/* Slider background */
+.theme-toggle .slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(255,255,255,0.1);
+    border-radius: 999px;
+    transition: background 0.25s;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0 4px;
+}
+
+/* Slider knob */
+.theme-toggle .slider::before {
+    content: "";
+    position: absolute;
+    width: 22px;
+    height: 22px;
+    left: 2px;
+    top: 2px;
+    background: #fff;
+    border-radius: 50%;
+    transition: transform 0.25s ease;
+}
+
+/* Toggle checked state */
+.theme-toggle input:checked + .slider::before {
+    transform: translateX(24px);
+}
+
+.theme-toggle input:checked + .slider {
+    background: rgba(32,60,90,0.35);
+}
+
+/* Sun/Moon icons */
+.theme-toggle .icon-sun {
+    font-size: 12px;
+    color: #ffdd57;
+}
+
+.theme-toggle .icon-moon {
+    font-size: 12px;
+    color: #aaa;
+}

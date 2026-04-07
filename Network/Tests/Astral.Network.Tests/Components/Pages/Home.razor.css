@@ -1,0 +1,108 @@
+﻿table {
+	width: 100%;
+	border-collapse: separate;
+	/*border-bottom: 1px solid;*/
+	border-spacing: 0 8px; /* spacing between rows */
+	font-family: 'Segoe UI', Tahoma, sans-serif;
+	color: #f0f0f0;
+}
+
+thead th {
+	background-color: #2c2c2c;
+	padding: 10px 12px;
+	text-align: left;
+	font-weight: 600;
+	font-size: 0.95rem;
+	border-radius: 6px 6px 0 0; /* rounded top corners */
+}
+
+tbody td {
+	background-color: #333;
+	padding: 10px 12px;
+	border-bottom: 1px solid #333;
+	font-size: 0.9rem;
+}
+
+/*tbody tr:hover td {
+	background-color: #333;*/ /* subtle hover effect */
+/*}*/
+
+tbody tr:last-child td {
+	border-bottom: none; /* remove last row border */
+}
+
+.table-container {
+	width: 100%;
+	overflow-x: auto; /* horizontal scroll if too wide */
+	overflow-y: auto; /* vertical scroll if too tall (optional) */
+	margin-top: 1.5%;
+	max-height: 80vh; /* optional: max table height relative to viewport */
+}
+
+
+/*.stats-table th,
+.stats-table td {
+	white-space: nowrap;*/ /* prevents breaking numbers */
+/*}*/
+
+
+
+caption {
+	caption-side: top;
+	text-align: left;
+	font-size: 1rem;
+	font-weight: 600;
+	margin-bottom: 8px;
+}
+
+
+.start-btn {
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-weight: 500;
+    transition: background 0.2s;
+    cursor: pointer;
+
+    outline: none;
+    box-shadow: none;
+}
+
+/* Hover effect by state */
+.start-btn.btn-primary:hover {
+    background-color: #0056b3; /* darker blue */
+}
+
+.start-btn.btn-danger:hover {
+    background-color: #b02a37; /* darker red */
+}
+
+.start-btn.btn-starting:hover {
+    background-color: #138496; /* darker teal */
+}
+
+.start-btn.btn-stopping:hover {
+    background-color: #e0a800; /* darker yellow/orange */
+}
+
+.start-btn.btn-primary {
+    background-color: #005ec2; /* blue */
+}
+
+.start-btn.btn-danger {
+    background-color: #92252f; /* red */
+}
+
+.start-btn.btn-starting {
+    background-color: #17a2b8; /* cyan/teal */
+}
+
+.start-btn.btn-stopping {
+    background-color: #ffc107; /* yellow/orange */
+}
+
+.start-btn:disabled {
+    background-color: #555;
+    cursor: not-allowed;
+}

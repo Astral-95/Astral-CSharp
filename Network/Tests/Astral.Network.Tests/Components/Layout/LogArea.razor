@@ -1,0 +1,126 @@
+﻿@using Astral.Logging
+@using Astral.Network.Tests.Tools
+@implements IDisposable
+@inject IJSRuntime JS
+@inject Blazored.LocalStorage.ILocalStorageService LocalStorage
+
+@{
+	List<LogStruct> LogsCopy;
+
+	lock (Logs)
+	{
+		LogsCopy = Logs.ToList();
+	}
+}
+
+
+<div class="log-area text-white" @ref="LogAreaRef">
+	@lock (Logs)
+	{
+		foreach (var Log in LogsCopy)
+		{
+			<div class="@GetLogClass(Log.Level)">
+				@if (Log.Name != null)
+				{
+					<span>[@Log.Date] - [@Log.Level] - [@Log.Name]: @Log.Message</span>
+				}
+				else
+				{
+					<span>@Log.Message</span>
+				}
+			</div>
+		}
+	}
+</div>
+
+<script>
+	window.ScrollToBottom = (element) => {
+		if (!element) return;
+
+		// Delay slightly to let browser render content
+		setTimeout(() => {
+			element.scrollTop = element.scrollHeight;
+		}, 1); // 1ms is enough
+	};
+</script>
+
+@code {
+	private ElementReference LogAreaRef;
+
+	[Parameter] public int MaxSavedLogs { get; set; } = 100;
+	public List<LogStruct> Logs { get; set; } = new();
+
+	private bool SettingsLoaded = false;
+	private bool Disposed = false;
+
+	protected override async Task OnAfterRenderAsync(bool FirstRender)
+	{
+		if (!SettingsLoaded && FirstRender)
+		{
+			var SavedLogs = await LocalStorage.GetItemAsync<List<LogStruct>>($"NetCodeTest_Logs");
+			if (SavedLogs != null)
+			{
+				lock (Logs) Logs = SavedLogs;
+			}
+
+			SettingsLoaded = true;
+			await InvokeAsync(() => StateHasChanged());
+			return;
+		}
+
+		await ScrollToBottom();
+	}
+
+	private string GetLogClass(ELogLevel level) => level switch
+	{
+		ELogLevel.Trace => "log-trace",
+		ELogLevel.Debug => "log-debug",
+		ELogLevel.Info => "log-info",
+		ELogLevel.Warning => "log-warning",
+		ELogLevel.Error => "log-error",
+		ELogLevel.Critical => "log-critical",
+		_ => "log-default"
+	};
+
+	public async Task AddLog(LogStruct LogData)
+	{
+		if (Disposed) return;
+		lock (Logs) Logs.Add(LogData);
+
+		await InvokeAsync(() => StateHasChanged());
+		await SaveSettings();
+	}
+
+	public async Task ClearLogs()
+	{
+		if (Disposed) return;
+		lock (Logs) Logs.Clear();
+		await InvokeAsync(() => StateHasChanged());
+		await SaveSettings();
+	}
+
+	private async Task ScrollToBottom()
+	{
+		if (Disposed) return;
+		await JS.InvokeVoidAsync("ScrollToBottom", LogAreaRef);
+	}
+
+	private async Task SaveSettings()
+	{
+		if (Disposed) return;
+		List<LogStruct> LogsToSave;
+
+		lock (Logs)
+		{
+			int StartIndex = Math.Max(0, Logs.Count - MaxSavedLogs);
+			LogsToSave = Logs.GetRange(StartIndex, Logs.Count - StartIndex);
+		}
+
+		await LocalStorage.SetItemAsync($"NetCodeTest_Logs", LogsToSave);
+	}
+
+	public void Dispose()
+	{
+		Disposed = true;
+	}
+}

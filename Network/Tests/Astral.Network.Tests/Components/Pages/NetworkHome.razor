@@ -1,0 +1,604 @@
+﻿@page "/"
+@implements IDisposable
+@inject Blazored.LocalStorage.ILocalStorageService LocalStorage
+@inject ThemeService Theme
+@using Astral.Logging
+@using Astral.Network.Tools
+@using Astral.Network.Tests.Components.Layout
+@using Astral.Network.Tests.Components.Layout.Network
+@using Astral.Network.Tests.Tools
+@using Astral.Tick
+@rendermode InteractiveServer
+
+
+<div class="container">
+
+	<div class="settings-button" style="margin-top: 0.5rem">
+		<NetcodeTestSettings @ref="SettingsComponent" />
+	</div>
+
+	<button class="start-btn @GetButtonClass()"
+			@onclick="OnStartStopClicked"
+			disabled="@(TestStatus == ETestStatus.Stopping || TestStatus == ETestStatus.Starting)">
+		@ButtonText
+	</button>
+
+	<div class="d-flex justify-content-start" style="gap: 0.5rem; margin-top: 0.5rem;">
+
+		<button type="button"
+				class="button"
+				style="width: 135px;"
+				@onclick="HandleResetCountersBtn">
+			Reset counters
+		</button>
+
+		<button type="button"
+				class="shadow-none @(!Context.Clock.IsPaused ? "button" : "button-danger")"
+				style="width: 135px;"
+				@onclick="HandlePauseToggleBtn">
+			@PauseBtnText
+		</button>
+
+		
+		@* <div class="@(!Context.Clock.IsPaused ? "button-secondary" : "button-secondary-toggled") text-center" style="margin-top: 0.5rem" @onclick="HandlePauseToggleBtn">
+			@PauseBtnText
+		</div>
+
+		<div class="button-secondary text-center" style="margin-top: 0.5rem" @onclick="HandleResetCountersBtn">
+			Reset counters
+		</div> *@
+	</div>
+
+	@* <button class="start-btn"
+			@onclick="CollectGrabage">
+		Collect Garbage
+	</button> *@
+
+	<div class="table-container">
+		<table>
+			<thead>
+				<tr>
+					<th>Node</th>
+					<th>Connections</th>
+					<th>RPC_In</th>
+					<th>RPC_Out</th>
+					<th>RPC_In/s</th>
+					<th>RPC_Out/s</th>
+					<th>RPC_Total/s</th>
+					<th>PktsIn</th>
+					<th>PktsOut</th>
+					<th>Resends</th>
+					<th>InPPS</th>
+					<th>OutPPS</th>
+					<th>TotalPPS</th>
+					<th>AvgRTT/Conn</th>
+				</tr>
+			</thead>
+			<tbody>
+
+				<tr>
+					<td>Server</td>
+					<td>@ServerNumClients.ToString("N0")</td>
+					<td>@ServerSnapShot.AppIn.ToString("N0")</td>
+					<td>@ServerSnapShot.AppOut.ToString("N0")</td>
+					<td>@(ServerSnapShot.GetAppInPPS(SendElapsed).ToString("N0"))</td>
+					<td>@(ServerSnapShot.GetAppOutPPS(SendElapsed).ToString("N0"))</td>
+					<td>@((ServerSnapShot.GetAppInPPS(SendElapsed) + ServerSnapShot.GetAppOutPPS(SendElapsed)).ToString("N0"))</td>
+					<td>@ServerSnapShot.TotalIn.ToString("N0")</td>
+					<td>@ServerSnapShot.TotalOut.ToString("N0")</td>
+					<td>
+						@ServerSnapShot.Retransmitted.ToString("N0") -
+						@(ServerSnapShot.TotalOut != 0
+												? (((double)ServerSnapShot.Retransmitted / ServerSnapShot.TotalOut) * 100).ToString("N3")
+												: "0")%
+							  					</td>
+							  					<td>@(ServerSnapShot.GetInPPS(SendElapsed).ToString("N0"))</td>
+							  					<td>@(ServerSnapShot.GetOutPPS(SendElapsed).ToString("N0"))</td>
+							  					<td>@((ServerSnapShot.GetInPPS(SendElapsed) + ServerSnapShot.GetOutPPS(SendElapsed)).ToString("N0"))</td>
+							  					<td>@ServerSnapShot.SrttMilliseconds.ToString("N0")</td>
+							  				</tr>
+
+				<tr>
+					<td>Clients</td>
+					<td>@NumClients.ToString("N0")</td>
+					<td>@ClientsSnapShot.AppIn.ToString("N0")</td>
+					<td>@ClientsSnapShot.AppOut.ToString("N0")</td>
+					<td>@(ClientsSnapShot.GetAppInPPS(SendElapsed).ToString("N0"))</td>
+					<td>@(ClientsSnapShot.GetAppOutPPS(SendElapsed).ToString("N0"))</td>
+					<td>@((ClientsSnapShot.GetAppInPPS(SendElapsed) + ClientsSnapShot.GetAppOutPPS(SendElapsed)).ToString("N0"))</td>
+					<td>@ClientsSnapShot.TotalIn.ToString("N0")</td>
+					<td>@ClientsSnapShot.TotalOut.ToString("N0")</td>
+					<td>
+						@ClientsSnapShot.Retransmitted.ToString("N0") -
+						@(ClientsSnapShot.TotalOut != 0
+												? (((double)ClientsSnapShot.Retransmitted / ClientsSnapShot.TotalOut)*100).ToString("N3")
+												: "0")%
+					</td>
+					<td>@(ClientsSnapShot.GetInPPS(SendElapsed).ToString("N0"))</td>
+					<td>@(ClientsSnapShot.GetOutPPS(SendElapsed).ToString("N0"))</td>
+					<td>@((ClientsSnapShot.GetInPPS(SendElapsed) + ClientsSnapShot.GetOutPPS(SendElapsed)).ToString("N0"))</td>
+					<td>@ClientsSnapShot.SrttMilliseconds.ToString("N0")</td>
+				</tr>
+			</tbody>
+		</table>
+	</div>
+
+
+	<hr />
+	<span class="text-white"> Elapsed: @GetElapsedFormatted()</span>
+	<hr />
+
+	<LogArea @ref="LogAreaComp" />
+</div>
+
+
+
+
+
+@code {
+	private LogArea? LogAreaComp; // component ref
+	[Parameter] public NetcodeTestSettings? SettingsComponent { get; set; }
+
+	enum ETestStatus
+	{
+		Stopped,
+		Starting,
+		Running,
+		Stopping,
+	}
+
+	AstralLogger Logger = AstralLoggingCenter.CreateLogger("Astral.Tests.Network");
+	ETestStatus TestStatus = ETestStatus.Stopped;
+
+	Task? ReadTask;
+	CancellationTokenSource ReadCts = new CancellationTokenSource();
+
+	List<LogStruct> Logs = new List<LogStruct>();
+
+	int NumClients = 0;
+	int ServerNumClients = 0;
+	NetCodeTestM2SendManager? SenderManager;
+	PacketStatisticsSnapshot ServerSnapShot = new PacketStatisticsSnapshot();
+	PacketStatisticsSnapshot ClientsSnapShot = new PacketStatisticsSnapshot();
+
+	double Elapsed = 0.0;
+	double SendElapsed = 0.0;
+	private bool Disposed;
+
+	private string ButtonText = "Start";
+	private bool SettingsLoaded = false;
+
+	protected override void OnInitialized()
+	{
+		Theme.OnChanged += StateHasChanged;
+
+		GC.RegisterForFullGCNotification(10, 10);
+		Task.Run(async () =>
+		{
+			while (true)
+			{
+				if (GC.WaitForFullGCApproach() == GCNotificationStatus.Succeeded)
+				{
+					Logger.LogWarning($"[!] GC APPROACHING: {DateTime.Now:ss.fff}");
+				}
+				if (GC.WaitForFullGCComplete() == GCNotificationStatus.Succeeded)
+				{
+					Logger.LogWarning($"[!] GC COMPLETE: {DateTime.Now:ss.fff}");
+				}
+
+				await Task.Delay(100);
+			}
+		});
+	}
+
+	protected override async Task OnAfterRenderAsync(bool FirstRender)
+	{
+		if (SettingsLoaded || !FirstRender) return;
+
+		AstralLoggingCenter.Subscribe(OnLog);
+
+		Elapsed = await LocalStorage.GetItemAsync<double>("NetCodeTest_ElapsedSeconds");
+		var ServerSavedSnapshot = await LocalStorage.GetItemAsync<PacketStatisticsSnapshot>("NetCodeTest_ServerStats");
+		if (ServerSavedSnapshot != null) ServerSnapShot = ServerSavedSnapshot;
+		var ClientsSavedSnapshot = await LocalStorage.GetItemAsync<PacketStatisticsSnapshot>("NetCodeTest_ClientStats");
+		if (ClientsSavedSnapshot != null) ClientsSnapShot = ClientsSavedSnapshot;
+
+		ButtonText = "Start";
+
+		if (NetCodeTest.Instance.RunTask != null)
+		{
+			NetCodeTest.Instance.OnStopping += OnStopping;
+			NetCodeTest.Instance.OnFinished += OnTestComplete;
+			SenderManager = NetCodeTest.Instance.SenderManager;
+			ButtonText = "Stop";
+			StartReadTask();
+		}
+
+		await OnStateChange();
+		SettingsLoaded = true;
+	}
+
+	public void Dispose()
+	{
+		Disposed = true;
+		NetCodeTest.Instance.OnFinished -= OnTestComplete;
+	}
+
+	async Task OnStateChange()
+	{
+		if (Disposed) return;
+		await InvokeAsync(() => StateHasChanged());
+	}
+
+	void CollectGrabage()
+	{
+		Logger.LogInfo("Collecting garbage...");
+		GC.Collect();
+		GC.WaitForPendingFinalizers();
+		GC.Collect();
+		Logger.LogInfo($"Collecting garbage complete. TotalBytes: [{GC.GetTotalAllocatedBytes()}]");
+
+	}
+	private async Task OnStartStopClicked()
+	{
+		await SaveSettings();
+
+		if (NetCodeTest.Instance.RunTask != null)
+		{
+			await StopTestWrapper();
+		}
+		else
+		{
+			await StartTestWrapper();
+		}
+	}
+
+
+	async void OnLog(LogEntry Entry)
+	{
+		string Processed = Entry.Message
+			.Replace("\r", "")        // remove carriage returns
+			.Replace("\t", "  ");     // convert tabs
+		string[] Lines = Processed.Split('\n', StringSplitOptions.None);
+
+		for (int I = 0; I < Lines.Length; I++)
+		{
+			bool IsFirst = I == 0;
+
+			string Message = Lines[I];
+			ELogLevel Level = Entry.Level;
+			string? Name = IsFirst ? Entry.Name : null;
+			DateTime? Date = IsFirst ? Entry.Date : null;
+
+			var LogData = new LogStruct(Name, Level, Message, Date);
+
+			_ = LogAreaComp!.AddLog(LogData);
+		}
+
+		if (TestStatus == ETestStatus.Stopping || TestStatus == ETestStatus.Stopped) return;
+
+		if (Entry.Level == ELogLevel.Error || Entry.Level == ELogLevel.Critical)
+		{
+			if (NetCodeTest.Instance.RunTask == null) return;
+			await StopTestWrapper();
+			//await Task.Delay(500);
+			//await StopReadLoopAsync();
+			//await OnStateChange();
+		}
+	}
+
+
+	long TickId = -1;
+	//void StartReadTask()
+	//{
+	//	if (ReadTask != null) return;
+	//	ReadCts = new();
+	//	ReadTask = Task.Run(ReadTaskLoop);
+	//}
+	//async Task StopReadLoopAsync()
+	//{
+	//	ReadCts.Cancel();
+	//	if (ReadTask == null) return;
+	//	await ReadTask;
+	//	ReadTask = null;
+	//}
+
+	void StartReadTask()
+	{
+		if (TickId != -1) return;
+		TickId = ParallelTickManager.Register(ReadTick, 5);
+	}
+
+	void StopReadLoopAsync()
+	{
+		if (TickId == -1) return;
+		ParallelTickManager.Unregister(TickId);
+		TickId = -1;
+	}
+
+	void ReadTick()
+	{
+		ServerSnapShot = new PacketStatisticsSnapshot();
+		try
+		{
+			Elapsed = NetCodeTest.Instance.Sw.Elapsed.TotalSeconds;
+			if (NetCodeTest.Instance.SenderManager != null)
+			{
+				SendElapsed = NetCodeTest.Instance.SenderManager.Sw.Elapsed.TotalSeconds;
+			}
+
+			if (NetCodeTest.Instance.Server == null)
+			{
+				ServerSnapShot.Reset();
+				ServerNumClients = 0;
+			}
+			else
+			{
+				ServerSnapShot.Reset();
+				ServerNumClients = NetCodeTest.Instance.Server.NumClientsConnected;
+				foreach (var Connections in NetCodeTest.Instance.Server.WorkerClientConnections)
+				{
+					foreach (var Client in Connections)
+					{
+						ServerSnapShot.Add(Client.PacketStats);
+					}
+				}
+			}
+
+			if (NetCodeTest.Instance.Clients.Count < 1)
+			{
+				NumClients = 0;
+				ClientsSnapShot.Reset();
+			}
+			else
+			{
+				ClientsSnapShot.Reset();
+				NumClients = NetCodeTest.Instance.Clients.Count;
+				foreach (var Client in NetCodeTest.Instance.Clients)
+				{
+					ClientsSnapShot.Add(Client.PacketStats);
+				}
+			}
+
+		}
+		catch (Exception)
+		{
+			
+		}
+		finally
+		{
+			_ = OnStateChange();
+		}
+	}
+
+	async Task ReadTaskLoop()
+	{
+		ServerSnapShot = new PacketStatisticsSnapshot();
+		while (!ReadCts.IsCancellationRequested)
+		{
+			try
+			{
+				Elapsed = NetCodeTest.Instance.Sw.Elapsed.TotalSeconds;
+				if (NetCodeTest.Instance.SenderManager != null)
+				{
+					SendElapsed = NetCodeTest.Instance.SenderManager.Sw.Elapsed.TotalSeconds;
+				}
+
+				if (NetCodeTest.Instance.Server == null)
+				{
+					ServerSnapShot.Reset();
+					ServerNumClients = 0;
+				}
+				else
+				{
+					ServerSnapShot.Reset();
+					ServerNumClients = NetCodeTest.Instance.Server.NumClientsConnected;
+					foreach (var Connections in NetCodeTest.Instance.Server.WorkerClientConnections)
+					{
+						foreach (var Client in Connections)
+						{
+							ServerSnapShot.Add(Client.PacketStats);
+						}
+					}
+				}
+
+				if (NetCodeTest.Instance.Clients.Count < 1)
+				{
+					NumClients = 0;
+					ClientsSnapShot.Reset();
+				}
+				else
+				{
+					ClientsSnapShot.Reset();
+					NumClients = NetCodeTest.Instance.Clients.Count;
+					foreach (var Client in NetCodeTest.Instance.Clients)
+					{
+						ClientsSnapShot.Add(Client.PacketStats);
+					}
+				}
+
+			}
+			catch (Exception)
+			{
+				continue;
+			}
+			finally
+			{
+				await OnStateChange();
+				await Task.Delay(250);
+			}
+		}
+	}
+
+
+	private async Task StartTestWrapper()
+	{
+		if (NetCodeTest.Instance.RunTask != null) return;
+
+		ButtonText = "Starting...";
+		TestStatus = ETestStatus.Starting;
+		await LogAreaComp!.ClearLogs();
+		StateHasChanged();
+
+		while (SettingsComponent == null)
+		{
+			await Task.Delay(100);
+		}
+
+		StartReadTask();
+
+		var Tot = PooledObjectsTracker.GetRentedObjectsCount();
+
+		NetCodeTest.Instance.OnStopping += OnStopping;
+		NetCodeTest.Instance.OnFinished += OnTestComplete;
+		try
+		{
+			NetCodeTest.Instance.Start(SettingsComponent.Settings);
+			ButtonText = "Stop";
+			TestStatus = ETestStatus.Running;
+		}
+		finally
+		{
+			await OnStateChange();
+		}
+	}
+	private async Task StopTestWrapper()
+	{
+		if (NetCodeTest.Instance.RunTask == null)
+		{
+			Logger.LogError($"There are no tests to stop."); return;
+		}
+
+		if (TestStatus != ETestStatus.Running) return;
+
+		ButtonText = "Stopping...";
+		TestStatus = ETestStatus.Stopping;
+
+		try
+		{
+			await OnStateChange();
+			NetCodeTest.Instance.OnStopping -= OnStopping;
+			NetCodeTest.Instance.OnFinished -= OnTestComplete;
+			StopReadLoopAsync();
+			await NetCodeTest.Instance.StopAsync();
+		}
+		catch (Exception Ex)
+		{
+			Logger.LogError(Ex.ToString());
+		}
+		finally
+		{
+			ButtonText = "Start";
+			TestStatus = ETestStatus.Stopped;
+			await SaveSettings();
+			await OnStateChange();
+		}
+	}
+
+	async void OnStopping()
+	{
+		if (TestStatus != ETestStatus.Running) return;
+		ButtonText = "Cleaning up...";
+		TestStatus = ETestStatus.Stopping;
+		NetCodeTest.Instance.OnStopping -= OnStopping;
+		StopReadLoopAsync();
+		await OnStateChange();
+	}
+
+
+	async void OnTestComplete()
+	{
+		ButtonText = "Cleaning up...";
+		TestStatus = ETestStatus.Stopping;
+		NetCodeTest.Instance!.OnFinished -= OnTestComplete;
+		StopReadLoopAsync();
+		await SaveSettings();
+		ButtonText = "Start";
+		TestStatus = ETestStatus.Stopped;
+		await OnStateChange();
+	}
+
+
+
+	private async Task SaveSettings()
+	{
+		if (Disposed) return;
+
+		await LocalStorage.SetItemAsync("NetCodeTest_ElapsedSeconds", Elapsed);
+		await LocalStorage.SetItemAsync("NetCodeTest_ServerStats", ServerSnapShot);
+		await LocalStorage.SetItemAsync("NetCodeTest_ClientStats", ClientsSnapShot);
+
+		//int MaxSavedLogs = 500;
+		//var logsToSave = Logs.Skip(Math.Max(0, Logs.Count - MaxSavedLogs)).ToList();
+		//await LocalStorage.SetItemAsync("NetCodeTest_Logs", logsToSave);
+	}
+
+	private string GetButtonClass()
+	{
+		return TestStatus switch
+		{
+			ETestStatus.Starting => "btn-starting",
+			ETestStatus.Running => "btn-danger",
+			ETestStatus.Stopping => "btn-stopping",
+			ETestStatus.Stopped => "btn-primary",
+			_ => "btn-primary"
+		};
+	}
+
+	private string GetElapsedFormatted()
+	{
+		if (Elapsed < 60)
+			return $"{Elapsed:N2} sec";
+		else if (Elapsed < 3600)
+			return $"{Elapsed / 60:N2} min";
+		else if (Elapsed < 86400)
+			return $"{Elapsed / 3600:N2} h";
+		else
+			return $"{Elapsed / 86400:N2} d";
+	}
+
+	private string PauseBtnText => Context.Clock.IsPaused ? "Resume" : "Pause";
+
+	private void HandlePauseToggleBtn()
+	{
+		if (Context.Clock.IsPaused)
+		{
+			Context.ResumeClock();
+		}
+		else
+		{
+			Context.PauseClock();
+		}
+	}
+
+	private void HandleResetCountersBtn()
+	{
+		ServerSnapShot.Reset();
+		ClientsSnapShot.Reset();
+
+		NetCodeTest.Instance.Sw.Restart();
+
+		Elapsed = NetCodeTest.Instance.Sw.Elapsed.TotalSeconds;
+		if (NetCodeTest.Instance.SenderManager != null)
+		{
+			NetCodeTest.Instance.SenderManager.Sw.Restart();
+			SendElapsed = NetCodeTest.Instance.SenderManager.Sw.Elapsed.TotalSeconds;
+		}
+
+		if (NetCodeTest.Instance.Server != null)
+		{
+			foreach (var Connections in NetCodeTest.Instance.Server.WorkerClientConnections)
+			{
+				foreach (var Client in Connections)
+				{
+					Client.PacketStats.Reset();
+				}
+			}
+		}
+
+		if (NetCodeTest.Instance.Clients.Count > 0)
+		{
+			foreach (var Client in NetCodeTest.Instance.Clients) Client.PacketStats.Reset();
+		}
+	}
+}

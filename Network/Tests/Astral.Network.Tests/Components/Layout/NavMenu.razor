@@ -1,0 +1,42 @@
+﻿@inject ThemeService Theme
+
+<div class="top-nav">
+    <div class="left-group">
+        <a class="app-title" href="">Astral.Tests</a>
+    </div>
+
+    @* <div class="center-group">
+        <NavLink href="" class="nav-item" Match="NavLinkMatch.All">Home</NavLink>
+        <NavLink href="End2End" class="nav-item">Network</NavLink>
+    </div> *@
+
+    <div class="right-group">
+        <label class="theme-toggle">
+            <input type="checkbox" @bind="IsDark"/>
+            <span class="slider">
+                <span class="icon-sun">☀</span>
+                <span class="icon-moon">🌙</span>
+            </span>
+        </label>
+    </div>
+</div>
+
+
+
+
+
+
+@code {
+	protected override void OnInitialized()
+	{
+		Theme.OnChanged += StateHasChanged;
+	}
+
+	private bool IsDark;
+
+	private void OnToggle()
+	{
+		IsDark = !IsDark;
+		Theme.Toggle(); // assumes this exists in your project (you already used it)
+	}
+}

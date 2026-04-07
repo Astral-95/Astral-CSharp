@@ -1,0 +1,123 @@
+<Project>
+	<PropertyGroup>
+		<!-- Run analyzers during full builds -->
+		<RunAnalyzersDuringBuild>true</RunAnalyzersDuringBuild>
+		<!-- Keep analyzers active in the IDE / live analysis -->
+		<RunAnalyzersDuringLiveAnalysis>true</RunAnalyzersDuringLiveAnalysis>
+		<!-- Make code style rules enforced during build -->
+		<EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+		<!--<TreatWarningsAsErrors>true</TreatWarningsAsErrors>-->
+
+		<Configurations>Debug;Release;DebugServer;DebugClient;ReleaseServer;ReleaseClient</Configurations>
+		<EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
+	</PropertyGroup>
+
+
+	<ItemGroup Condition="'$(MSBuildProjectName)' != 'Astral.Analyzer'">
+		<PackageReference Include="AstralAnalyzer" Version="1.0.0" IncludeAssets="build;analyzers" />
+	</ItemGroup>
+
+	<Target Name="RestoreLocalAnalyzer" BeforeTargets="Restore" Condition="'$(MSBuildProjectName)' == 'Astral'">
+		<Message Importance="high" Text="Restoring local packages for $(MSBuildProjectName) from $(SolutionDir)nupkg" />
+		<Exec Command="dotnet restore &quot;$(MSBuildProjectFullPath)&quot; --source &quot;$(SolutionDir)nupkg&quot;" />
+	</Target>
+
+	<!--
+	
+	===============================
+	General
+	===============================
+	CFG_DEBUG
+	CFG_RELEASE	
+	CFG_CLIENT
+	CFG_SERVER
+	CFG_SERVER_DED
+
+	===============================
+	Logging
+	===============================
+	CFG_LOG_TRACE
+	CFG_LOG_DEBUG
+	CFG_LOG_INFO
+	CFG_LOG_WARN
+	CFG_LOG_ERROR
+	
+	===============================
+	Network
+	===============================
+	CFG_NET_TRACE
+	CFG_NET_DEBUG
+	CFG_NET_PKT_STATS
+	CFG_LOG_NET_TRACE
+	CFG_LOG_NET_DEBUG
+	CFG_LOG_NET_INFO
+	CFG_LOG_NET_WARN
+	CFG_LOG_NET_ERROR
+	-->
+
+
+	<!-- Debug build -->
+	<PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
+		<DefineConstants>$(DefineConstants);TRACE;</DefineConstants>
+		<DefineConstants>$(DefineConstants);CFG_DEBUG;CFG_RELEASE;CFG_CLIENT;CFG_SERVER;</DefineConstants>
+		<DefineConstants>$(DefineConstants);CFG_LOG_TRACE;CFG_LOG_DEBUG;CFG_LOG_INFO;CFG_LOG_WARN;CFG_LOG_ERROR;</DefineConstants>
+		<DefineConstants>$(DefineConstants);CFG_NET_TRACE;CFG_NET_DEBUG;CFG_NET_PKT_STATS;</DefineConstants>
+		<DefineConstants>$(DefineConstants);CFG_LOG_NET_TRACE;CFG_LOG_NET_DEBUG;CFG_LOG_NET_INFO;CFG_LOG_NET_WARN;CFG_LOG_NET_ERROR</DefineConstants>
+	</PropertyGroup>
+
+	<!-- DebugServer build -->
+	<PropertyGroup Condition=" '$(Configuration)' == 'DebugServer' ">
+		<DefineConstants>$(DefineConstants);TRACE;</DefineConstants>
+		<DefineConstants>$(DefineConstants);CFG_DEBUG;CFG_RELEASE;CFG_SERVER;CFG_SERVER_DED;</DefineConstants>
+		<DefineConstants>$(DefineConstants);CFG_LOG_TRACE;CFG_LOG_DEBUG;CFG_LOG_INFO;CFG_LOG_WARN;CFG_LOG_ERROR;</DefineConstants>
+		<DefineConstants>$(DefineConstants);CFG_NET_TRACE;CFG_NET_DEBUG;CFG_NET_PKT_STATS;</DefineConstants>
+		<DefineConstants>$(DefineConstants);CFG_LOG_NET_TRACE;CFG_LOG_NET_DEBUG;CFG_LOG_NET_INFO;CFG_LOG_NET_WARN;CFG_LOG_NET_ERROR</DefineConstants>
+	</PropertyGroup>
+
+	<!-- DebugClient build -->
+	<PropertyGroup Condition=" '$(Configuration)' == 'DebugClient' ">
+		<DefineConstants>$(DefineConstants);TRACE;</DefineConstants>
+		<DefineConstants>$(DefineConstants);CFG_DEBUG;CFG_RELEASE;CFG_CLIENT;</DefineConstants>
+		<DefineConstants>$(DefineConstants);CFG_LOG_TRACE;CFG_LOG_DEBUG;CFG_LOG_INFO;CFG_LOG_WARN;CFG_LOG_ERROR;</DefineConstants>
+		<DefineConstants>$(DefineConstants);CFG_NET_TRACE;CFG_NET_DEBUG;CFG_NET_PKT_STATS;</DefineConstants>
+		<DefineConstants>$(DefineConstants);CFG_LOG_NET_TRACE;CFG_LOG_NET_DEBUG;CFG_LOG_NET_INFO;CFG_LOG_NET_WARN;CFG_LOG_NET_ERROR</DefineConstants>
+	</PropertyGroup>
+
+
+
+	<!-- Release build -->
+	<PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
+		<DefineConstants>$(DefineConstants);TRACE;</DefineConstants>
+		<DefineConstants>$(DefineConstants);CFG_DEBUG;CFG_RELEASE;CFG_CLIENT;CFG_SERVER;</DefineConstants>
+		<DefineConstants>$(DefineConstants);CFG_LOG_TRACE;CFG_LOG_DEBUG;CFG_LOG_INFO;CFG_LOG_WARN;CFG_LOG_ERROR;</DefineConstants>
+		<DefineConstants>$(DefineConstants);CFG_NET_TRACE;CFG_NET_DEBUG;CFG_NET_PKT_STATS;</DefineConstants>
+		<DefineConstants>$(DefineConstants);CFG_LOG_NET_TRACE;CFG_LOG_NET_DEBUG;CFG_LOG_NET_INFO;CFG_LOG_NET_WARN;CFG_LOG_NET_ERROR</DefineConstants>
+	</PropertyGroup>
+	<!--<PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
+		<DefineConstants>$(DefineConstants);TRACE;</DefineConstants>
+		<DefineConstants>$(DefineConstants);CFG_RELEASE;CFG_CLIENT;CFG_SERVER;</DefineConstants>
+		<DefineConstants>$(DefineConstants);CFG_LOG_TRACE;CFG_LOG_DEBUG;CFG_LOG_INFO;CFG_LOG_WARN;CFG_LOG_ERROR;</DefineConstants>
+		<DefineConstants>$(DefineConstants);CFG_NET_TRACE;CFG_NET_PKT_STATS;</DefineConstants>
+		<DefineConstants>$(DefineConstants);CFG_LOG_NET_TRACE;CFG_LOG_NET_DEBUG;CFG_LOG_NET_INFO;CFG_LOG_NET_WARN;CFG_LOG_NET_ERROR</DefineConstants>
+	</PropertyGroup>-->
+
+
+
+	<!-- ReleaseServer build -->
+	<PropertyGroup Condition=" '$(Configuration)' == 'ReleaseServer' ">
+		<DefineConstants>$(DefineConstants);TRACE;</DefineConstants>
+		<DefineConstants>$(DefineConstants);CFG_DEBUG;CFG_RELEASE;CFG_SERVER;CFG_SERVER_DED;</DefineConstants>
+		<DefineConstants>$(DefineConstants);CFG_LOG_TRACE;CFG_LOG_DEBUG;CFG_LOG_INFO;CFG_LOG_WARN;CFG_LOG_ERROR;</DefineConstants>
+		<DefineConstants>$(DefineConstants);CFG_NET_TRACE;CFG_NET_DEBUG;CFG_NET_PKT_STATS;</DefineConstants>
+		<DefineConstants>$(DefineConstants);CFG_LOG_NET_TRACE;CFG_LOG_NET_DEBUG;CFG_LOG_NET_INFO;CFG_LOG_NET_WARN;CFG_LOG_NET_ERROR</DefineConstants>
+	</PropertyGroup>
+
+	<!-- ReleaseClient build -->
+	<PropertyGroup Condition=" '$(Configuration)' == 'ReleaseClient' ">
+		<DefineConstants>$(DefineConstants);TRACE;</DefineConstants>
+		<DefineConstants>$(DefineConstants);CFG_DEBUG;CFG_RELEASE;CFG_CLIENT;</DefineConstants>
+		<DefineConstants>$(DefineConstants);CFG_LOG_TRACE;CFG_LOG_DEBUG;CFG_LOG_INFO;CFG_LOG_WARN;CFG_LOG_ERROR;</DefineConstants>
+		<DefineConstants>$(DefineConstants);CFG_NET_TRACE;CFG_NET_DEBUG;CFG_NET_PKT_STATS;</DefineConstants>
+		<DefineConstants>$(DefineConstants);CFG_LOG_NET_TRACE;CFG_LOG_NET_DEBUG;CFG_LOG_NET_INFO;CFG_LOG_NET_WARN;CFG_LOG_NET_ERROR</DefineConstants>
+	</PropertyGroup>
+</Project>

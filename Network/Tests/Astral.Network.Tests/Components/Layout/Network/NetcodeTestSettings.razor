@@ -1,0 +1,225 @@
+﻿@using Astral.Network.Tools
+@using Astral.Network.Tests
+@using Astral.Network.Tests.Tools
+@inject Blazored.LocalStorage.ILocalStorageService LocalStorage
+
+
+<div class="settings-wrapper" @onkeydown="HandleKeyDown" tabindex="0">
+	<button class="button" @onclick="ToggleSettings">
+		<span class="settings-icon">☰</span>
+	</button>
+
+	@if (IsExpanded)
+	{
+		<div class="settings-overlay @(IsClosing ? "fade-out" : "fade-in")" @onmousedown="CollapseSettings">
+			<div class="settings-content" @onmousedown:stopPropagation @onclick:stopPropagation>
+				<h3>Network Settings</h3>
+
+				<button class="button" @onclick="ResetSettings">
+					Reset Settings
+				</button>
+
+				<div class="general-settings">
+					<label style="text-align: left;">NumRuns</label>
+					<input type="number" @bind="Settings.NumRuns" bind:event="oninput" @bind:after="SaveSettings" />
+
+					<label style="text-align: left;">NumClients</label>
+					<input type="number" @bind="Settings.NumClients" bind:event="oninput" @bind:after="SaveSettings" />
+
+					<label style="text-align: left;">Duration seconds</label>
+					<input type="number" @bind="Settings.DurationSeconds" bind:event="oninput" @bind:after="SaveSettings" />
+				</div>
+
+
+
+				<div class="endpoints-settings-area">
+
+					<div>
+						<div class="endpint-settings-header">
+							<h4>Server</h4>
+							<div class="endpoint-address @(Settings.ServerEnabled ? "" : "disabled")">
+								<input type="text" @bind="Settings.ServerAddress" bind:event="oninput" @bind:after="SaveSettings" placeholder="e.g. 127.0.0.1:5000" />
+							</div>
+							<label class="switch">
+								<input type="checkbox" @bind="Settings.ServerEnabled" bind:event="oninput" @bind:after="SaveSettings">
+								<span class="slider"></span>
+							</label>
+						</div>
+
+						<div class="packet-area @(Settings.ServerEnabled ? "" : "disabled")">
+
+							<label>Reliable %</label>
+							<input type="number" step="0.01" @bind="Settings.ServerPackets.ReliablePercentage" bind:event="oninput" @bind:after="SaveSettings" />
+
+							<label>Min RPCs Persecond</label>
+							<input type="number" @bind="Settings.ServerPackets.MinPPS" bind:event="oninput" @bind:after="SaveSettings" />
+
+							<label>Max RPCs Persecond</label>
+							<input type="number" @bind="Settings.ServerPackets.MaxPPS" bind:event="oninput" @bind:after="SaveSettings" />
+
+							@* <label>Fixed Body Size</label>
+							<input type="checkbox" @bind="Settings.ServerPackets.FixedBodySize" bind:event="oninput" @bind:after="SaveSettings" />
+
+							<label>Fixed Body Bytes</label>
+							<input type="number" @bind="Settings.ServerPackets.FixedBodySizeBytes" bind:event="oninput" @bind:after="SaveSettings" />
+
+							<label>Min Body Bytes</label>
+							<input type="number" @bind="Settings.ServerPackets.MinBodySizeBytes" bind:event="oninput" @bind:after="SaveSettings" />
+
+							<label>Max Body Bytes</label>
+							<input type="number" @bind="Settings.ServerPackets.MaxBodySizeBytes" bind:event="oninput" @bind:after="SaveSettings" /> *@
+
+						</div>
+					</div>
+
+					<div>
+						<div class="endpint-settings-header">
+							<h4>Clients</h4>
+							<div class="endpoint-address @(Settings.ClientsEnabled ? "" : "disabled")">
+								<input type="text" @bind="Settings.ClientsServerAddress" bind:event="oninput" @bind:after="SaveSettings" placeholder="e.g. 127.0.0.1:5000" />
+							</div>
+							<label class="switch">
+								<input type="checkbox" @bind="Settings.ClientsEnabled" bind:event="oninput" @bind:after="SaveSettings" />
+								<span class="slider"></span>
+							</label>
+						</div>
+
+						<div class="packet-area @(Settings.ClientsEnabled ? "" : "disabled")">
+
+							<label>Reliable %</label>
+							<input type="number" step="0.01" @bind="Settings.ClientPackets.ReliablePercentage" bind:event="oninput" @bind:after="SaveSettings" />
+
+							<label>Min RPCs Persecond</label>
+							<input type="number" @bind="Settings.ClientPackets.MinPPS" bind:event="oninput" @bind:after="SaveSettings" />
+
+							<label>Max RPCs Persecond</label>
+							<input type="number" @bind="Settings.ClientPackets.MaxPPS" bind:event="oninput" @bind:after="SaveSettings" />
+
+							@* <label>Fixed Body Size</label>
+							<input type="checkbox" @bind="Settings.ClientPackets.FixedBodySize" bind:event="oninput" @bind:after="SaveSettings" />
+
+							<label>Fixed Body Bytes</label>
+							<input type="number" @bind="Settings.ClientPackets.FixedBodySizeBytes" bind:event="oninput" @bind:after="SaveSettings" />
+
+							<label>Min Body Bytes</label>
+							<input type="number" @bind="Settings.ClientPackets.MinBodySizeBytes" bind:event="oninput" @bind:after="SaveSettings" />
+
+							<label>Max Body Bytes</label>
+							<input type="number" @bind="Settings.ClientPackets.MaxBodySizeBytes" bind:event="oninput" @bind:after="SaveSettings" /> *@
+						</div>
+					</div>
+					
+
+					
+				</div>
+			</div>
+		</div>
+
+		
+	}
+</div>
+
+
+@code {
+	public NetCodeTestSettings CurrentSettings => Settings;
+	[Parameter] public NetCodeTestSettings Settings { get; set; } = new NetCodeTestSettings
+	{
+		NumRuns = 1,
+		NumClients = 2000,
+		DurationSeconds = 60,
+
+		ServerPackets = new NetCodeTestPacketSettings
+		{
+			ReliablePercentage = 0.2,
+			MinPPS = 1,
+			MaxPPS = 10,
+			FixedBodySize = false,
+			FixedBodySizeBytes = 128,
+			MinBodySizeBytes = 32,
+			MaxBodySizeBytes = 64,
+		},
+
+		ClientPackets = new NetCodeTestPacketSettings
+		{
+			ReliablePercentage = 0.2,
+			MinPPS = 1,
+			MaxPPS = 10,
+			FixedBodySize = false,
+			FixedBodySizeBytes = 128,
+			MinBodySizeBytes = 32,
+			MaxBodySizeBytes = 64,
+		},
+	};
+
+	private bool SettingsLoaded = false;
+
+	protected override async Task OnAfterRenderAsync(bool FirstRender)
+	{
+		if (SettingsLoaded || !FirstRender) return;
+
+		var TestSettings = await LocalStorage.GetItemAsync<NetCodeTestSettings>("NetCodeTest_Settings");
+		if (TestSettings != null) Settings = TestSettings;
+
+		await InvokeAsync(() => StateHasChanged());
+		SettingsLoaded = true;
+	}
+
+	private async Task SaveSettings()
+	{
+		await LocalStorage.SetItemAsync("NetCodeTest_Settings", Settings);
+	}
+
+	private bool IsExpanded = false;
+	private bool IsClosing = false;
+
+	void ResetSettings()
+	{
+		Settings = new NetCodeTestSettings
+		{
+			NumRuns = 1,
+			NumClients = 2000,
+
+			ServerPackets = new NetCodeTestPacketSettings
+			{
+				ReliablePercentage = 0.2,
+				MinPPS = 5,
+				MaxPPS = 25,
+				FixedBodySize = true,
+				FixedBodySizeBytes = 128,
+				MinBodySizeBytes = 32,
+				MaxBodySizeBytes = 64,
+			},
+
+			ClientPackets = new NetCodeTestPacketSettings
+			{
+				ReliablePercentage = 0.2,
+				MinPPS = 5,
+				MaxPPS = 25,
+				FixedBodySize = true,
+				FixedBodySizeBytes = 128,
+				MinBodySizeBytes = 32,
+				MaxBodySizeBytes = 64,
+			},
+		};
+
+		StateHasChanged();
+		_ = SaveSettings();
+	}
+
+	private void ToggleSettings() => IsExpanded = !IsExpanded;
+	private async void CollapseSettings()
+	{
+		if (!IsExpanded) return;
+		IsClosing = true;
+		StateHasChanged();
+		await Task.Delay(200); // match CSS animation duration
+		IsExpanded = false;
+		IsClosing = false;
+		StateHasChanged();
+	}
+
+	private void HandleKeyDown(KeyboardEventArgs e)
+	{
+		if (e.Key == "Escape") CollapseSettings();
+	}
+}

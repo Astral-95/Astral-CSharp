@@ -1,0 +1,37 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
+
+	  <!--<ServerGarbageCollection>true</ServerGarbageCollection>
+	  <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+	  <PublishReadyToRun>true</PublishReadyToRun>
+	  <TieredCompilation>false</TieredCompilation>-->
+  </PropertyGroup>
+
+	
+	<!--
+	NETA_TRACE
+	NETA_DEBUG
+	NETA_PKT_STATS
+	
+	
+	NETA_LOG_TRACE
+	NETA_LOG_DEBUG
+	NETA_LOG_INFO
+	NETA_LOG_WARN
+	-->
+	<PropertyGroup>
+		<DefineConstants>$(DefineConstants);NETA_TRACE;NETA_DEBUG;NETA_PKT_STATS;</DefineConstants>
+		<DefineConstants>$(DefineConstants);NET_LOG_TRACE;NET_LOG_DEBUG;NET_LOG_INFO;NET_LOG_WARN</DefineConstants>
+	</PropertyGroup>
+	
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\0_Core\Astral\Astral.csproj" />
+  </ItemGroup>
+
+</Project>

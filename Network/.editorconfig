@@ -1,0 +1,72 @@
+root = true
+
+[*.cs]
+
+############################
+# Naming Styles
+############################
+
+# PascalCase
+dotnet_naming_style.pascal_case_style.capitalization = pascal_case
+dotnet_naming_style.pascal_case_style.required_prefix = 
+dotnet_naming_style.pascal_case_style.required_suffix = 
+
+# PascalCase with "E" prefix (Enums)
+dotnet_naming_style.enum_with_e_prefix.capitalization = pascal_case
+dotnet_naming_style.enum_with_e_prefix.required_prefix = E
+dotnet_naming_style.enum_with_e_prefix.required_suffix = 
+
+############################
+# Symbols
+############################
+
+# Locals
+dotnet_naming_symbols.locals.applicable_kinds = local
+dotnet_naming_symbols.locals.applicable_accessibilities = *
+dotnet_naming_symbols.locals.required_modifiers = *
+
+# Enums
+dotnet_naming_symbols.enums.applicable_kinds = enum
+dotnet_naming_symbols.enums.applicable_accessibilities = *
+dotnet_naming_symbols.enums.required_modifiers = *
+
+############################
+# Rules
+############################
+
+# Locals must be PascalCase
+dotnet_naming_rule.locals_should_be_pascal_case.severity = error
+dotnet_naming_rule.locals_should_be_pascal_case.symbols = locals
+dotnet_naming_rule.locals_should_be_pascal_case.style = pascal_case_style
+
+# Enums must be PascalCase and start with "E"
+dotnet_naming_rule.enums_should_start_with_e.severity = error
+dotnet_naming_rule.enums_should_start_with_e.symbols = enums
+dotnet_naming_rule.enums_should_start_with_e.style = enum_with_e_prefix
+csharp_indent_labels = one_less_than_current
+csharp_using_directive_placement = outside_namespace:silent
+csharp_prefer_simple_using_statement = true:suggestion
+csharp_prefer_braces = true:silent
+csharp_style_namespace_declarations = block_scoped:silent
+csharp_style_prefer_method_group_conversion = true:silent
+csharp_style_prefer_top_level_statements = true:silent
+csharp_style_prefer_primary_constructors = true:suggestion
+csharp_prefer_system_threading_lock = true:suggestion
+csharp_style_expression_bodied_methods = false:silent
+csharp_style_expression_bodied_constructors = false:silent
+csharp_style_expression_bodied_operators = false:silent
+csharp_style_expression_bodied_properties = true:silent
+csharp_style_expression_bodied_indexers = true:silent
+csharp_style_expression_bodied_accessors = true:silent
+csharp_style_expression_bodied_lambdas = true:silent
+csharp_style_expression_bodied_local_functions = false:silent
+csharp_space_around_binary_operators = before_and_after
+[*.{cs,vb}]
+dotnet_style_operator_placement_when_wrapping = beginning_of_line
+tab_width = 4
+indent_size = 4
+end_of_line = crlf
+dotnet_style_coalesce_expression = true:suggestion
+dotnet_style_null_propagation = true:suggestion
+dotnet_style_prefer_is_null_check_over_reference_equality_method = true:suggestion
+

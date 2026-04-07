@@ -1,0 +1,39 @@
+﻿.log-area {
+	flex: 1; /* takes remaining space */
+	background-color: #383838;
+	color: ghostwhite;
+	font-family: monospace;
+	padding: 5px;
+	overflow-y: auto; /* only log panel scrolls */
+	border: 5px solid #444;
+	white-space: pre-wrap;
+}
+
+.log-trace {
+	color: #888;
+}
+/* gray, very low-level */
+.log-debug {
+	color: #0ff;
+}
+/* cyan, debug info */
+.log-info {
+	color: #fff;
+}
+/* white, neutral info */
+.log-warning {
+	color: #ff0;
+}
+/* yellow, caution */
+.log-error {
+	color: #f66;
+}
+/* red, error */
+.log-critical {
+	color: #f0f;
+}
+/* magenta, severe */
+.log-default {
+	color: #fff;
+}
+/* fallback */

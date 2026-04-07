@@ -1,0 +1,26 @@
+﻿@inherits LayoutComponentBase
+@inject ThemeService Theme
+
+<div>
+    <main style="height: 100vh;">
+		<NavMenu />
+
+        <article >
+			@Body
+        </article>
+    </main>
+</div>
+
+<div id="blazor-error-ui">
+    An unhandled error has occurred.
+    <a href="" class="reload">Reload</a>
+    <a class="dismiss">🗙</a>
+</div>
+
+
+@code {
+	protected override void OnInitialized()
+	{
+		Theme.OnChanged += StateHasChanged;
+	}
+}
