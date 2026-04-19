@@ -133,7 +133,7 @@ public class ConnectionPackageMap
         Writer.Serialize(0);
     }
 
-    public void ImportObjectCreations(ByteReader Reader)
+    public void ImportObjectCreations(UnmanagedByteReader Reader)
     {
         Reader.Serialize<UInt16>();
     }
@@ -152,7 +152,7 @@ public class ConnectionPackageMap
         OutDeltaMappings.Clear();
     }
 
-    public void ImportMappings(ByteReader Reader)
+    public void ImportMappings(UnmanagedByteReader Reader)
     {
         ushort Count = Reader.Serialize<UInt16>();
         for (int i = 0; i < Count; ++i)
@@ -185,7 +185,7 @@ public class ConnectionPackageMap
     {
         Writer.Serialize(PendingAckObjIdsOut);
     }
-    public void ImportObjectAcks(ByteReader Reader)
+    public void ImportObjectAcks(UnmanagedByteReader Reader)
     {
         var MappingAcks = PooledList<UInt16>.Rent();
         Reader.Serialize(MappingAcks);

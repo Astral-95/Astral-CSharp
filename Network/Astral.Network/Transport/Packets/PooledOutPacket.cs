@@ -7,12 +7,18 @@ namespace Astral.Network.Transport;
 
 public class PooledOutPacket : OutPacket
 {
-    private static readonly ConcurrentStore<PooledOutPacket> Pool = new ConcurrentStore<PooledOutPacket>();
+    [ThreadStatic]
+    private static ObjectStack<PooledOutPacket> Pool;
 
-    public int Retries = 0;
-    public long DeadlineTicks = 0;
+    static int INumTnstantiated = 0;
+    static public int NumTnstantiated { get => INumTnstantiated; }
 
-    public static long GetPoolSize() { return Pool.Count; }
+
+    PooledOutPacket()
+    {
+        Interlocked.Increment(ref INumTnstantiated);
+    }
+
     protected void ResetPacket(Neta_PacketIdType Id, EProtocolMessage Message)
     {
         base.Id = Id;
@@ -33,7 +39,6 @@ public class PooledOutPacket : OutPacket
         base.Id = Id;
         this.Message = Message;
         HeaderBytes = NetaConsts.ReliableHeaderSizeBytes;
-        Retries = 0;
 
         Reset(NetaConsts.BufferMaxSizeBytes);
         FinalizeCalled = false;
@@ -49,6 +54,10 @@ public class PooledOutPacket : OutPacket
     public static PooledOutPacket Rent(Neta_PacketIdType Id, EProtocolMessage Message) => Rent<PooledOutPacket>(Id, Message);
     public static PooledOutPacket Rent<T>(Neta_PacketIdType Id, EProtocolMessage Message)
     {
+        if (Pool == null)
+        {
+            Pool = new ObjectStack<PooledOutPacket>();
+        }
         if (!Pool.Take(out var Packet))
         {
             Packet = new PooledOutPacket();
@@ -67,6 +76,10 @@ public class PooledOutPacket : OutPacket
 
     public static PooledOutPacket RentReliable<T>(Neta_PacketIdType Id, EProtocolMessage Message)
     {
+        if (Pool == null)
+        {
+            Pool = new ObjectStack<PooledOutPacket>();
+        }
         if (!Pool.Take(out var Packet))
         {
             Packet = new PooledOutPacket();

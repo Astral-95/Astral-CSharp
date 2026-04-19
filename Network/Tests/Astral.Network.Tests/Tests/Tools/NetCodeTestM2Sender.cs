@@ -14,7 +14,7 @@ public class NetCodeTestM2Sender
     readonly DebugPacketSettings DebugPktSettings;
     readonly CancellationToken Ct;
 
-    long TickId = 0;
+    TickHandle TickHandle = default;
     long LastSendTick;
 
     public Action<NetCodeTestM2Sender>? OnComplete;
@@ -32,15 +32,8 @@ public class NetCodeTestM2Sender
     {
         long Jitter = (long)(Random.Shared.NextDouble() * PacketSettings.PpsTicks);
         LastSendTick = ParallelTickManager.ThisTickTicks + Jitter;
-        if (Connection.WorkerIndex < -1)
-        {
-            TickId = ParallelTickManager.Register(Tick, 240);
-        }
-        else
-        {
-            TickId = ParallelTickManager.Register(Tick, 240);
-            //TickId = AutoParallelTickManager.Register(Tick, WorkerIndex: Connection.WorkerIndex);
-        }
+        TickHandle = ParallelTickManager.Register(Tick, 240, WorkerIndex: Connection.WorkerIndex);
+        //TickId = ParallelTickManager.Register(Tick, 240);
 
         //LastSendTick = AutoParallelTickManager.ThisTickTicks + Jitter + 5000000;
         //if (Connection.WorkerIndex < -1)
@@ -88,7 +81,7 @@ public class NetCodeTestM2Sender
 
     void Completed()
     {
-        ParallelTickManager.Unregister(TickId);
+        ParallelTickManager.Unregister(ref TickHandle);
         OnComplete!.Invoke(this);
     }
 }

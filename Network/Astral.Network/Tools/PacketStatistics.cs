@@ -75,7 +75,7 @@ public class PacketStatistics
         var CurrRTT = Volatile.Read(ref PrivateSmoothedRttTicks);
         var NewRTT = (Int64)(CurrRTT * 0.75 + RttSampleTicks * 0.25);
         Interlocked.Exchange(ref PrivateSmoothedRttTicks, NewRTT);
-        var NewRTO = Math.Min(MaxRtoTicks, (long)(CurrRTT * 2 + (TickFrequency * 0.100)));
+        var NewRTO = Math.Min(MaxRtoTicks, (long)(NewRTT * 2 + (TickFrequency * 0.100)));
         Interlocked.Exchange(ref RetransmissionTimeoutTicks, NewRTO);
     }
 

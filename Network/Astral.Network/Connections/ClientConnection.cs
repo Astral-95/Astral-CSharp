@@ -2,6 +2,7 @@
 using Astral.Network.Enums;
 using Astral.Network.Serialization;
 using Astral.Network.Servers;
+using Astral.Serialization;
 
 namespace Astral.Network.Connections;
 
@@ -32,26 +33,27 @@ public partial class ClientConnection : NetaConnection
                 $"Expected: [HelloServer] Received: [{TextReceived}]");
         }
 
-        PooledNetByteWriter Writer = RentWriter();
+        PooledByteWriter Writer = PooledByteWriter.Rent<ClientConnection_HandleHandshake_Server>();
 
         string OutText = "Understandable";
         Writer.Serialize(OutText);
-        SendHandshakeWriter<ClientConnection_HandleHandshake_Server>(Writer);
+        SendHandshakeWriter(Writer);
         Writer.Return();
 
         return true;
     }
 
-    class ClientConnection_PostHandshakeSetup { }
-    internal void PostHandshakeSetup()
-    {
-        PooledNetByteWriter Writer = RentWriter(128);
-
-        PackageMap.SerializeObject(this, Writer);
-        PackageMap.SerializeObject(Channel, Writer);
-        PackageMap.ExportMappings(Writer);
-
-        SendHandshakeWriter<ClientConnection_PostHandshakeSetup>(Writer);
-        Writer.Return();
-    }
+    //class ClientConnection_PostHandshakeSetup { }
+    //internal void PostHandshakeSetup()
+    //{
+    //    PooledByteWriter Writer = PooledByteWriter.Rent(128);
+    //    PooledNetByteWriter Writer = RentWriter(128);
+    //
+    //    PackageMap.SerializeObject(this, Writer);
+    //    PackageMap.SerializeObject(Channel, Writer);
+    //    PackageMap.ExportMappings(Writer);
+    //
+    //    SendHandshakeWriter<ClientConnection_PostHandshakeSetup>(Writer);
+    //    Writer.Return();
+    //}
 }

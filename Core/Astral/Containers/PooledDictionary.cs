@@ -5,12 +5,12 @@ namespace Astral.Containers;
 public class PooledDictionary<TKey, TValue> : Dictionary<TKey, TValue> where TKey : notnull
 {
     protected int InPool = 0;
-    private static readonly ConcurrentStore<PooledDictionary<TKey, TValue>> Pool = new();
+    private static readonly ConcurrentFastQueue<PooledDictionary<TKey, TValue>> Pool = new();
 
     PooledDictionary(int Capacity) : base(Capacity) { }
     public static PooledDictionary<TKey, TValue> Rent(int Capacity)
     {
-        if (!Pool.Take(out var Container))
+        if (!Pool.TryDequeue(out var Container))
         {
             Container = new PooledDictionary<TKey, TValue>(Capacity);
             PooledObjectsTracker.OnNewPoolObject();
@@ -33,6 +33,6 @@ public class PooledDictionary<TKey, TValue> : Dictionary<TKey, TValue> where TKe
         Guard.Assert(Val == 0, "Attempted to return an object that is already in the pool");
         PooledObjectsTracker.Unregister(this);
 #endif
-        Pool.Add(this);
+        Pool.Enqueue(this);
     }
 }

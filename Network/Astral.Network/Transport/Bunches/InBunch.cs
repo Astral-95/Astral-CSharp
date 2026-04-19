@@ -5,13 +5,14 @@ using Astral.Serialization;
 using System.Buffers;
 using System.Collections.Concurrent;
 using Astral.Exceptions;
+using Astral.Containers;
 
 namespace Astral.Network.Transport;
 
 public class InBunch : NetByteReader
 {
-    //[ThreadStatic]
-    private static ConcurrentBag<InBunch> Pool = new();
+    [ThreadStatic]
+    private static ObjectStack<InBunch> Pool = new();
     static int INumTnstantiated = 0;
     static public int NumTnstantiated { get => INumTnstantiated; }
 
@@ -24,14 +25,14 @@ public class InBunch : NetByteReader
 #pragma warning disable CS8618
     InBunch() { Interlocked.Increment(ref INumTnstantiated); }
 #pragma warning restore CS8618
-    internal static InBunch Rent<T>(ConnectionPackageMap PackageMap, ByteReader InReader, Int32 NumBytes)
+    internal static InBunch Rent<T>(ConnectionPackageMap PackageMap, UnmanagedByteReader InReader, Int32 NumBytes)
     {
-        //if (Pool == null)
-        //{
-        //    Pool = new ObjectStack<InBunch>();
-        //}
+        if (Pool == null)
+        {
+            Pool = new ObjectStack<InBunch>();
+        }
 
-        if (!Pool.TryTake(out var Bunch))
+        if (!Pool.Take(out var Bunch))
         {
             Bunch = new InBunch();
             Bunch.PackageMap = PackageMap;
@@ -53,7 +54,8 @@ public class InBunch : NetByteReader
         }
 
         InReader.ValidateRead(NumBytes);
-        var Span = new ReadOnlySpan<byte>(InReader.GetBuffer(), InReader.Pos, NumBytes);
+        //var Span = new ReadOnlySpan<byte>(InReader.GetBufferAsReadOnlySpan(), InReader.Pos, NumBytes);
+        var Span = InReader.AsReadOnlySpan(NumBytes);
         Span.CopyTo(Bunch.Buffer.AsSpan(0, NumBytes));
 
         Bunch.Num = NumBytes;

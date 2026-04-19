@@ -28,7 +28,7 @@
 	</PropertyGroup>
 	
 	<Choose>
-	  <When Condition="'$(IsLinuxTarget)' == 'true' Or '$(IsLinuxHost)' == 'true' Or false">
+	  <When Condition="'$(IsLinuxTarget)' == 'true' Or '$(IsLinuxHost)' == 'true' Or true">
 	    <PropertyGroup>
 	      <DefineConstants>$(DefineConstants);LINUX</DefineConstants>
 	    </PropertyGroup>

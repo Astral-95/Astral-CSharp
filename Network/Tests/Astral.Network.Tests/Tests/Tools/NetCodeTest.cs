@@ -63,9 +63,12 @@ public class NetCodeTest
         {
             //NetaConnection.OutBunchPool = new OutBunchPool(1024);
             OutBunch.PrePopulate(175000);
-            PooledInPacket.PrePopulate(5000);
+#if LINUX
+            PooledInPacket.InitForWorker(2048);
+#endif
         };
 
+        ParallelTickManager.Initialize();
     }
     private NetCodeTest()
     {
@@ -73,8 +76,6 @@ public class NetCodeTest
         {
             Logger.LogError($"Tick Manager error: {Msg}");
         };
-
-        ParallelTickManager.Initialize();
     }
 
     internal void Start(NetCodeTestSettings InSettings)
@@ -93,7 +94,6 @@ public class NetCodeTest
         if (Cts != null) await Cts.CancelAsync();
         if (RunCts != null) await RunCts.CancelAsync();
         await RunTask;
-        Reset();
     }
 
     internal async Task RunAsync()
@@ -200,10 +200,11 @@ public class NetCodeTest
                     Logger.LogInfo($"Clients connected.");
                 }
 
-
-
-                if (RunCts.IsCancellationRequested) break;
-                await SenderManager.WaitForCompletionAsync();
+                if (!RunCts.IsCancellationRequested)
+                {
+                    await SenderManager.WaitForCompletionAsync();
+                }
+                
                 RunCts.Cancel();
 
                 SendSw.Stop();
@@ -235,7 +236,7 @@ public class NetCodeTest
                 Logger.LogInfo($"Disposing run {NumRun + 1} complete.");
 
                 if (!(Settings.ServerEnabled && Settings.ClientsEnabled)) break;
-                await Task.Delay(1500);
+                await Task.Delay(500);
             }
         }
         catch (Exception Ex)

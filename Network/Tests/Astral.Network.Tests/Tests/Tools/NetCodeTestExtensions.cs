@@ -5,6 +5,7 @@ using Astral.Network.Drivers;
 using Astral.Network.Enums;
 using Astral.Network.Servers;
 using Astral.Network.Transport;
+using Astral.Tick;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 
@@ -15,15 +16,16 @@ internal class NetCodeTestExtensions
     public static NetaServer CreateServer(string Address = "127.0.0.1:8000")
     {
         NetaServer Server = new NetaServer();
-        Server.Init(new NetaDriver(), AddressConverters.ParseEndPoint(Address)!, NetaConnectionMode.AutoDeferred);
+        Server.Init(new NetaDriver(), AddressConverters.ParseEndPoint(Address)!);
         return Server;
     }
-    public static void CreateClients(List<ServerConnection> ClientsList, int NumClients, string Address = "127.0.0.8000")
+    public static void CreateClients(List<ServerConnection> ClientsList, int NumClients, string Address = "127.0.0.1:8000")
     {
+        var Index = ParallelTickManager.WorkerIndex;
         for (int ClientIndex = 0; ClientIndex < NumClients; ClientIndex++)
         {
             var NewClient = new ServerConnection();
-            NewClient.InitLocalConnection(new NetaDriver(), AddressConverters.ParseEndPoint(Address)!, NetaConnectionMode.AutoDeferred);
+            NewClient.InitLocalConnection(new NetaDriver(), AddressConverters.ParseEndPoint(Address)!);
 
             ClientsList.Add(NewClient);
         }
@@ -80,7 +82,7 @@ internal class NetCodeTestExtensions
 
     public static async Task WaitClientsConnectAsync(NetaServer Server, int NumClients, CancellationToken Ct = default)
     {
-        while (!Ct.IsCancellationRequested && Server.NumClientsConnected < NumClients)
+        while (!Ct.IsCancellationRequested && Server.ClientConnections.NumConnected < NumClients)
         {
             await Task.Delay(100);
         }
@@ -101,12 +103,9 @@ internal class NetCodeTestExtensions
     {
         if (Server != null)
         {
-            foreach (var Connections in Server.WorkerClientConnections)
+            foreach (var Connection in Server.ClientConnections)
             {
-                foreach (var Client in Connections)
-                {
-                    Client.PacketStats.ResetCounters();
-                }
+                Connection.PacketStats.ResetCounters();
             }
         }
 
@@ -121,20 +120,20 @@ internal class NetCodeTestExtensions
         }
     }
 
-    public static async Task ServerSendLoopTask(NetaServer Server, NetCodeTestPacketSettings PacketSettings, CancellationToken Ct = default)
-    {
-        List<Task> Tasks = new();
-        foreach (var Kvp in Server!.EndPointConnectionMap)
-        {
-            var ClientChannel = Kvp.Value.Channels[0]!;
-            var NewClientTask = Task.Run(() => ChannelPacketSenderLoopAsync(ClientChannel, PacketSettings, Ct));
-            Tasks.Add(NewClientTask);
-        }
-
-        Stopwatch Sw = Stopwatch.StartNew();
-
-        await Task.WhenAll(Tasks);
-    }
+    //public static async Task ServerSendLoopTask(NetaServer Server, NetCodeTestPacketSettings PacketSettings, CancellationToken Ct = default)
+    //{
+    //    List<Task> Tasks = new();
+    //    foreach (var Kvp in Server!.EndPointConnectionMap)
+    //    {
+    //        var ClientChannel = Kvp.Value.Channels[0]!;
+    //        var NewClientTask = Task.Run(() => ChannelPacketSenderLoopAsync(ClientChannel, PacketSettings, Ct));
+    //        Tasks.Add(NewClientTask);
+    //    }
+    //
+    //    Stopwatch Sw = Stopwatch.StartNew();
+    //
+    //    await Task.WhenAll(Tasks);
+    //}
 
     //public static async Task<double> ServerSendOnceTask(NetaServer Server, NetCodeTestPacketSettings PacketSettings, CancellationToken Ct = default)
     //{
@@ -456,11 +455,10 @@ internal class NetCodeTestExtensions
 
         var TotalPooled = PooledObjectsTracker.GetTotalPooledObjects();
         var TotalRented = PooledObjectsTracker.GetRentedObjectsCount();
-        var TotalOutPackets = PooledOutPacket.GetPoolSize();
 
         Logger.LogInfo($"Total Pooled Objects: {TotalPooled}");
         Logger.LogInfo($"Total Rented Objects: {TotalRented}");
-        Logger.LogInfo($"Pkts created: InPacket[{PooledInPacket.NumTnstantiated}] OutPackets[{TotalOutPackets}]");
+        Logger.LogInfo($"Pkts created: InPacket[{PooledInPacket.NumTnstantiated}] OutPackets[{PooledOutPacket.NumTnstantiated}]");
         Logger.LogInfo($"Bunchs created: InBunches[{InBunch.NumTnstantiated}] OutBunchs[{OutBunch.NumTnstantiated}]");
 
         if (Logs != null)

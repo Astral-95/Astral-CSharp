@@ -15,23 +15,7 @@ public class PooledByteWriter : ByteWriter
     protected PooledByteWriter(Int32 InitialSizeBytes = 128) : base(InitialSizeBytes) { }
 #pragma warning restore CS8618
 
-    public static PooledByteWriter Rent(Int32 MinBytes = 64)
-    {
-        if (!Pool.TryTake(out var Writer))
-        {
-            Writer = new PooledByteWriter(MinBytes);
-        }
-        else
-        {
-            Writer.InPool = 0;
-            Writer.Reset(MinBytes);
-        }
-
-#if CFG_DEBUG
-        PooledObjectsTracker.Register(Writer);
-#endif
-        return Writer;
-    }
+    public static PooledByteWriter Rent(Int32 MinBytes = 64) => Rent<PooledByteWriter>();
 
     public static PooledByteWriter Rent<T>(Int32 MinBytes = 64)
     {
@@ -53,9 +37,9 @@ public class PooledByteWriter : ByteWriter
 
     public void Return()
     {
-#if CFG_DEBUG
         var Val = Interlocked.CompareExchange(ref InPool, 1, 0);
         Guard.DebugAssert(Val == 0);
+#if CFG_DEBUG
         PooledObjectsTracker.Unregister(this);
 #endif
         Pool.Add(this);
@@ -63,9 +47,9 @@ public class PooledByteWriter : ByteWriter
 
     public void Return<T>()
     {
-#if CFG_DEBUG
         var Val = Interlocked.CompareExchange(ref InPool, 1, 0);
         if (Val != 0) throw new AlreadyInPoolException($"{typeof(T).Name} Attempted to return a writer that is already in the pool.");
+#if CFG_DEBUG
         PooledObjectsTracker.Unregister(this);
 #endif
         Pool.Add(this);

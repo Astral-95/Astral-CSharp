@@ -65,6 +65,18 @@ public unsafe class ByteReader
         Pos = 0;
         Num = RemainingBytes;
     }
+
+    public ByteReader(UnmanagedByteReader Reader)
+    {
+        int RemainingBytes = Reader.Num - Reader.Pos;
+        Buffer = new byte[RemainingBytes];
+
+        ReadOnlySpan<byte> source = new ReadOnlySpan<byte>(Reader.Buffer + Reader.Pos, RemainingBytes);
+        source.CopyTo(Buffer);
+
+        Pos = 0;
+        Num = RemainingBytes;
+    }
 #pragma warning restore CS8618
 
     public ByteReader(byte[] Buffer, Int32 LengthBytes)

@@ -4,6 +4,7 @@ using Astral.Network.Serialization;
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using Astral.Exceptions;
+using Astral.Containers;
 
 namespace Astral.Network.Transport;
 
@@ -11,7 +12,8 @@ public class OutBunch : NetByteWriter
 {
     internal protected int InPool = 0;
     //private static readonly AtomicStack<OutBunch> Pool = new AtomicStack<OutBunch>(1024);
-    private static readonly ConcurrentBag<OutBunch> Pool = new ConcurrentBag<OutBunch>();
+    [ThreadStatic]
+    private static ObjectStack<OutBunch> Pool;
 
     static public int NumTnstantiated = 0;
     public NetaChannel? Channel { get; internal set; }
@@ -29,12 +31,13 @@ public class OutBunch : NetByteWriter
 
     OutBunch()
     {
-
+        Interlocked.Increment(ref NumTnstantiated);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal OutBunch(NetaChannel Channel, int NumBytes = 128) : base(NumBytes)
     {
+        PooledObjectsTracker.OnNewPoolObject();
         //Writer.Serialize(Id);
         //Writer.WriteBit(Ordered);
         //Writer.Serialize(Channel.ChannelIndex, 8);
@@ -48,11 +51,13 @@ public class OutBunch : NetByteWriter
 
     public static void PrePopulate(int Num)
     {
+        if (Pool == null)
+        {
+            Pool = new();
+        }
         for (int i = 0; i < Num; i++)
         {
-            var Bunch = new OutBunch(null, 64);
-            Pool.Add(Bunch);
-            PooledObjectsTracker.OnNewPoolObject();
+            Pool.Add(new OutBunch(null, 64));
         }
     }
 
@@ -64,7 +69,7 @@ public class OutBunch : NetByteWriter
         this.Channel = Channel;
 
         Id = 0;
-        ReferencedObjects.Clear();
+        //ReferencedObjects.Clear();
         Flags = EBunchFlags.None;
         HeaderBytes = sizeof(Neta_BunchIdType) + sizeof(Neta_ChannelIndexType) + sizeof(Neta_ChannelFlagsType);
         Reset(NumBytes);
@@ -74,7 +79,11 @@ public class OutBunch : NetByteWriter
 
     public static OutBunch Rent<T>(NetaChannel Channel)
     {
-        if (!Pool.TryTake(out var Bunch))
+        if (Pool == null)
+        {
+            Pool = new();
+        }
+        if (!Pool.Take(out var Bunch))
         {
             Bunch = new OutBunch(Channel, 64);
             PooledObjectsTracker.OnNewPoolObject();

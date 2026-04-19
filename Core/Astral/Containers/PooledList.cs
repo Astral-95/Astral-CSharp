@@ -7,12 +7,17 @@ public class PooledList<TElement> : List<TElement>
 {
     protected int InPool = 0;
 
-    private static readonly ConcurrentBag<PooledList<TElement>> Pool = new();
+    [ThreadStatic]
+    private static ObjectStack<PooledList<TElement>> Pool;
 
     PooledList(int Capacity) : base(Capacity) { }
     public static PooledList<TElement> Rent(int Capacity = 2)
     {
-        if (!Pool.TryTake(out var Container))
+        if (Pool == null)
+        {
+            Pool = new ObjectStack<PooledList<TElement>>();
+        }
+        if (!Pool.Take(out var Container))
         {
             Container = new PooledList<TElement>(Capacity);
             PooledObjectsTracker.OnNewPoolObject();
@@ -22,9 +27,6 @@ public class PooledList<TElement> : List<TElement>
             Container.InPool = 0;
             Container.EnsureCapacity(Capacity);
         }
-#if CFG_DEBUG
-        PooledObjectsTracker.Register(Container);
-#endif
         return Container;
     }
 
@@ -35,7 +37,6 @@ public class PooledList<TElement> : List<TElement>
         var Val = Interlocked.CompareExchange(ref InPool, 1, 0);
 #if CFG_DEBUG
         Guard.Assert(Val == 0, "Attempted to return an object that is already in the pool");
-        PooledObjectsTracker.Unregister(this);
 #endif
         Clear();
         Pool.Add(this);

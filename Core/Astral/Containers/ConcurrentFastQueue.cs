@@ -4,7 +4,7 @@ using System.Runtime.CompilerServices;
 
 namespace Astral.Containers;
 
-public class ConcurrentStore<T> where T : class
+public class ConcurrentFastQueue<T> where T : class
 {
     // Padding before: 64 bytes to isolate from the class header/metadata
     private long p1, p2, p3, p4, p5, p6, p7, p8;
@@ -25,7 +25,7 @@ public class ConcurrentStore<T> where T : class
     public int Count => Items.Count;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public T? Rent()
+    public T? TryDequeue()
     {
         var Item = FastItem;
         if (Item == null || Interlocked.CompareExchange(ref FastItem, null, Item) != Item)
@@ -41,7 +41,7 @@ public class ConcurrentStore<T> where T : class
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool Take([MaybeNullWhen(false)] out T OutItem)
+    public bool TryDequeue([MaybeNullWhen(false)] out T OutItem)
     {
         OutItem = FastItem;
 
@@ -54,7 +54,7 @@ public class ConcurrentStore<T> where T : class
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void Add(T Object)
+    public void Enqueue(T Object)
     {
         if (Interlocked.CompareExchange(ref FastItem, Object, null) != null)
         {

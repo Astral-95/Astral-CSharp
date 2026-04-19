@@ -5,48 +5,18 @@ using Astral.Network.Sockets;
 using Astral.Network.Toolkit;
 using Astral.Network.Tools;
 using Astral.Network.Transport;
+using Astral.Threading;
 using Astral.Tick;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 namespace Astral.Network.Servers;
 
 public partial class NetaServer
 {
-    [System.Runtime.CompilerServices.InlineArray(NetaConsts.BufferMaxSizeBytes)]
-    public struct PacketBuffer
-    {
-        private byte _;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    internal struct IOVector
-    {
-        public IntPtr Base;   // pointer to buffer
-        public IntPtr Length; // length of buffer
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    internal struct MsgHdr
-    {
-        public IntPtr msg_name;       // pointer to sockaddr
-        public int msg_namelen;    // size of sockaddr
-        public IntPtr msg_iov;        // pointer to IOVector array
-        public IntPtr msg_iovlen;     // number of IOVectors (1 per packet)
-        public IntPtr msg_control;    // 0
-        public IntPtr msg_controllen; // 0
-        public int msg_flags;      // 0
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    internal struct Mmsghdr
-    {
-        public MsgHdr msg_hdr;
-        public uint msg_len; // filled in by kernel on return
-    }
-
     public PacketStatistics PacketStats { get; private set; }
 
     //EndPoint ReceiveEndPoint = new IPEndPoint(IPAddress.Any, 0);
@@ -56,15 +26,6 @@ public partial class NetaServer
 
     public event Action<NetaConnection>? OnConnectionOpened;
 
-    public List<NetaConnection>[] WorkerClientConnections = new List<NetaConnection>[ParallelTickManager.WorkerCount];
-    public object ClientConnectionsListLock = new();
-    public ConcurrentDictionary<EndPointKey, NetaConnection> EndPointConnectionMap { get; internal set; } = new();
-
-    private readonly object RecentlyClosedEndPointsQueueLock = new object();
-    Queue<(EndPointKey Endpoint, DateTime Expiry)> RecentlyClosedEndPointsQueue = new();
-    private readonly Dictionary<EndPointKey, byte> RecentlyClosedEndPointsMap = new();
-
-    public ConcurrentDictionary<EndPointKey, bool> BlockedEndPoints { get; internal set; } = new();
 
     private readonly List<Task>[] WorkerConnectTasks = new List<Task>[ParallelTickManager.WorkerCount];
     private readonly object[] WorkerConnectTaskLocks = new object[ParallelTickManager.WorkerCount];
@@ -74,18 +35,30 @@ public partial class NetaServer
     
 
 
-    int ReceiveArgsPerSocket = 16;
-    List<SocketAsyncEventArgs> SocketArgs = new List<SocketAsyncEventArgs>(64);
+    
 
 
     void Initialize_Transport(IPEndPoint LocalEndPoint, int RecBufferSize = 2 * 1024 * 1024, int SendBufferSize = 2 * 1024 * 1024)
     {
         Initialize_Receiver(LocalEndPoint, RecBufferSize, SendBufferSize);
-        Initialize_Transmitter();
+#if LINUX
+        Initialize_TransmitterLinux(); 
+#endif
+    }
+
+    void Start_Transport()
+    {
+#if LINUX
+        Start_TransportLinuxReceiver();
+        Start_TransportLinuxTransmitter();
+#else
+        PostReceives();
+        //ReceiveParallelTickHandle = ParallelTickManager.RegisterParallelTick(ParallelTick_SocketReceive, 480);
+#endif
     }
 
 
-    
+
     void ProcessPacket(PooledInPacket Packet, SocketAsyncEventArgs e)
     {
         if (e.BytesTransferred < 1)
@@ -98,95 +71,59 @@ public partial class NetaServer
         //Dispatch_IncomingPacket(Packet, EndPoint);
     }
 
-
-    void ParallelTick_ProcessConnectionsRemoveQueue(int WorkerIndex)
-    {
-        var Queue = WorkerConnectionRemoveQueue[WorkerIndex];
-
-        foreach (var Connection in Queue)
-        {
-            lock (ClientConnectionsListLock) WorkerClientConnections[WorkerIndex].Remove(Connection);
-        }
-    }
-
     public void ParallelTick_Connections(int WorkerIndex)
     {
-        var Conns = WorkerClientConnections[WorkerIndex];
+        var Conns = ClientConnections.GetLocalList();
 
         foreach (var Conn in Conns)
         {
-            Conn.Tick_Remote(WorkerIndex);
+            try
+            {
+                Conn.Tick_Remote(WorkerIndex);
+            }
+            catch (Exception Ex)
+            {
+                Logger.LogError($"Connection exception: {Ex.ToString()}");
+                ClientConnections.EnqueueRemove(Conn, true);
+            }
         }
     }
 
-    public void ParallelTick()
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void ParallelTick_Transport(int WorkerIndex)
     {
-        if (ShutdownRequested) return;
-        int WorkerIndex = ParallelTickManager.WorkerIndex;
-
-        ParallelTick_ProcessConnectionsRemoveQueue(WorkerIndex);
+//#if LINUX
+//        ParallelTick_SocketReceive(WorkerIndex);
+//#endif
         ParallelTick_Receive(WorkerIndex);
-
-        //while (IncomingQueues[WorkerIndex].TryDequeue(out var Item))
-        //{
-        //    try
-        //    {
-        //        ReceivePacket(Item.Socket, Item.Packet, Item.EndPointKey, WorkerIndex);
-        //    }
-        //    catch (Exception Ex)
-        //    {
-        //        if (Cts.IsCancellationRequested || Ex is ObjectDisposedException) break;
-        //        if (Ex is SocketException SocketEx && SocketEx.SocketErrorCode == SocketError.ConnectionReset)
-        //        {
-        //            if (SocketEx.SocketErrorCode == SocketError.OperationAborted) break;
-        //            if (SocketEx.SocketErrorCode == SocketError.ConnectionReset)
-        //            {
-        //                Logger.Log(ELogLevel.Error, $"{Ex}");
-        //                continue;
-        //            }
-        //        }
-        //
-        //        Logger.Log(ELogLevel.Critical, $"{Ex}"); break;
-        //    }
-        //}
 
         ParallelTick_Connections(WorkerIndex);
 #if LINUX
         ParallelTick_Send(WorkerIndex);
 #endif
+
+        ClientConnections.Tick_RemoveQueue(WorkerIndex);
     }
 
     // object NewConnLock = new object();
-    NetaConnection HandleNewConnection(NetaSocket Socket, InPacket Packet, EndPointKey RemoteEndPointKey, int WorkerIndex)
+    NetaConnection HandleNewConnection(NetaSocket Socket, InPacket Packet, ref NetaAddress NetaRemoteAddress, int WorkerIndex)
     {
-        if (EndPointConnectionMap.TryGetValue(RemoteEndPointKey, out var ExistingConn)) return ExistingConn;
+        if (ClientConnections.EndPointConnectionMap.TryGetValue(NetaRemoteAddress, out var ExistingConn)) return ExistingConn;
 
         NetaConnection NewConn = CreateConnection();
         NewConn.Server = this;
         NewConn.WorkerIndex = WorkerIndex;
         NewConn.ConnectionSetFlags(NetaConnectionFlags.Pending | NetaConnectionFlags.Handshaking);
-        NewConn.InitRemoteConnection(Driver, Socket, RemoteEndPointKey, Mode, new PacketStatistics());
+        NewConn.InitRemoteConnection(Driver, Socket, NetaRemoteAddress, new PacketStatistics());
 
-        lock (ClientConnectionsListLock) WorkerClientConnections[WorkerIndex].Add(NewConn);
-        EndPointConnectionMap.TryAdd(RemoteEndPointKey, NewConn);
+        ClientConnections.Add(NewConn, ref NetaRemoteAddress);
 
         Task HandshakeTask = Task.Run(async () =>
         {
             bool Success = await NewConn.HandleHandshake_Server(NetaDriver.ConnectTimeout, Cts.Token).ConfigureAwait(false);
-#if !NETA_DEBUG
-				//bool Success = await NewSocket.HandleConnect_Server(Cts.Token).ConfigureAwait(false);
-#else
-            //bool Success = await AsyncUtils.ExecuteTimeoutCrash(() => NewSocket.HandleConnect_Server(Cts.Token), 1000, "HandleNewConnection Timeout").ConfigureAwait(false);
-#endif
             NewConnectionHandshakeResult(NewConn, Success);
         });
 
-        //WorkerConnectTasks[WorkerIndex].Add(HandshakeTask);
-        //
-        //HandshakeTask.ContinueWith(t =>
-        //{
-        //    lock (WorkerConnectTaskLocks[WorkerIndex]) { WorkerConnectTasks[WorkerIndex].Remove(t); }
-        //});
         return NewConn;
     }
 
@@ -194,27 +131,24 @@ public partial class NetaServer
     {
         if (!Success)
         {
-            EndPointConnectionMap.TryRemove(Connection.RemoteEndPointKey, out var _);
-            BlockedEndPoints.TryAdd(Connection.RemoteEndPointKey, true);
+            ClientConnections.EnqueueRemove(Connection, true);
             Connection.Shutdown();
-            Logger.LogWarning($"Client[{Connection.RemoteEndPoint.ToString()}] connecting failed.");
+            Logger.LogWarning($"Client[{Connection.NetaRemoteAddr.GetAddressString()}] connecting failed.");
             return;
         }
 
-        Interlocked.Increment(ref NumClientsConnected);
-
-        Connection.ConnectionFlipFlags(NetaConnectionFlags.Pending| NetaConnectionFlags.Handshaking| NetaConnectionFlags.Connected);
+        Connection.ConnectionFlipFlags(NetaConnectionFlags.Pending | NetaConnectionFlags.Handshaking | NetaConnectionFlags.Connected);
 
         OnConnectionOpened?.Invoke(Connection);
     }
 
-    void ReceivePacket(NetaSocket Socket, PooledInPacket Packet, EndPointKey RemoteEndPointKey, int WorkerIndex)
+    unsafe void ReceivePacket(NetaSocket Socket, PooledInPacket Packet, NetaAddress RemoteEndPointKey, int WorkerIndex)
     {
-        var NumBytes = MemoryMarshal.Read<Neta_PacketSizeType>(Packet.GetBuffer());
+        var NumBytes = Unsafe.ReadUnaligned<Neta_PacketSizeType>(Packet.GetBuffer());
 #if NETA_DEBUG
-        if (NumBytes > Packet.GetBuffer().Length)
+        if (NumBytes > Packet.Length)
         {
-            throw new InvalidOperationException($"Numbytes is larger than buffer length.\n Numbytes: {NumBytes} BuffLen: {Packet.GetBuffer().Length}");
+            throw new InvalidOperationException($"Numbytes is larger than buffer length.\n Numbytes: {NumBytes} BuffLen: {Packet.Length}");
         }
         if (NumBytes < 1)
         {
@@ -225,126 +159,52 @@ public partial class NetaServer
 
         NetaConnection? NewConn = null;
 
-        EndPointConnectionMap.TryGetValue(RemoteEndPointKey, out NewConn);
-
-        if (NewConn == null)
+        try
         {
-            if (BlockedEndPoints.ContainsKey(RemoteEndPointKey) || RecentlyClosedEndPointsMap.ContainsKey(RemoteEndPointKey))
+            if (!ClientConnections.TryGetConnection(ref RemoteEndPointKey, out NewConn))
+            {
+                if (!ClientConnections.IsEndPointConnectionAllowed(RemoteEndPointKey))
+                {
+                    Packet.Return();
+                    return;
+                }
+
+                NewConn = HandleNewConnection(Socket, Packet, ref RemoteEndPointKey, WorkerIndex);
+            }
+
+            if (NewConn.ConnectionHasFlags(NetaConnectionFlags.Shutdown))
             {
                 Packet.Return();
                 return;
             }
-
-            NewConn = HandleNewConnection(Socket, Packet, RemoteEndPointKey, WorkerIndex);
+            NewConn.Dispatch_IncomingPacket(Packet);
         }
-
-        NewConn.Dispatch_IncomingPacket(Packet);
-    }
-
-
-
-
-    void TryRemoveEndPoint(ref EndPointKey EndPointKey, int WorkerIndex)
-    {
-        if (EndPointConnectionMap.TryRemove(EndPointKey, out var Conn))
+        catch (Exception Ex)
         {
-            Interlocked.Decrement(ref NumClientsConnected);
-            lock (ClientConnectionsListLock) WorkerClientConnections[WorkerIndex].Remove(Conn);
-            Conn.Shutdown();
-        }
+            Logger.LogError($"Connection receive exception: {Ex.ToString()}");
 
-        OnEndPointRemoved(EndPointKey);
-    }
-
-    void TryRemoveEndPoint(EndPointKey EndPointKey, int WorkerIndex, Exception? Ex = null)
-    {
-        if (!EndPointConnectionMap.TryRemove(EndPointKey, out var Conn))
-        {
-            BlockedEndPoints.TryAdd(EndPointKey, true);
-            if (Ex != null) Logger.LogCritical($"TryRemoveConnection: EndPoint is not registered and threw: {Ex}");
-        }
-        else
-        {
-            lock (ClientConnectionsListLock) WorkerClientConnections[WorkerIndex].Remove(Conn);
-            BlockedEndPoints.TryAdd(EndPointKey, true);
-            Conn.Shutdown();
-        }
-
-        OnEndPointRemoved(EndPointKey);
-    }
-
-
-    void OnEndPointRemoved(EndPointKey EndPointKey)
-    {
-        lock (RecentlyClosedEndPointsQueueLock)
-        {
-            RecentlyClosedEndPointsMap.TryAdd(EndPointKey, 0);
-            RecentlyClosedEndPointsQueue.Enqueue((EndPointKey, DateTime.UtcNow.AddSeconds(2)));
-
-            if (RecentlyClosedEndPointsMap.Count == 1)
-            {
-                EndpointExpirationCleanupTickId = ParallelTickManager.Register(EndpointExpirationCleanupTick);
-            }
+            ClientConnections.Remove(ref RemoteEndPointKey, true);
+            throw;
         }
     }
-
-    long EndpointExpirationCleanupTickId = 0;
-    void EndpointExpirationCleanupTick()
-    {
-        lock (RecentlyClosedEndPointsQueueLock)
-        {
-            var Now = DateTime.UtcNow;
-
-            while (RecentlyClosedEndPointsQueue.Count > 0 && RecentlyClosedEndPointsQueue.Peek().Expiry <= Now)
-            {
-                var Expired = RecentlyClosedEndPointsQueue.Dequeue();
-                RecentlyClosedEndPointsMap.Remove(Expired.Endpoint);
-            }
-
-            if (RecentlyClosedEndPointsQueue.Count == 0)
-            {
-                ParallelTickManager.Unregister(EndpointExpirationCleanupTickId);
-            }
-        }
-    }
-
 
     internal void ConnectionClosed(NetaConnection Conn)
     {
-        Interlocked.Decrement(ref NumClientsConnected);
-        OnEndPointRemoved(Conn.RemoteEndPointKey);
-        WorkerConnectionRemoveQueue[Conn.WorkerIndex].Add(Conn);
-
-        if (!EndPointConnectionMap.Remove(Conn.RemoteEndPointKey, out var _))
-        {
-            Logger.LogError($"ConnectionClosed: EndPoint is not registered.");
-        }
-        else
-        {
-            OnConnectionClosed?.Invoke(Conn);
-
-            lock (ClientConnectionsListLock) WorkerClientConnections[Conn.WorkerIndex].Remove(Conn);;
-        }
+        ClientConnections.EnqueueRemove(Conn);
     }
 
 
 
-    const int SHUT_RD = 0;
-    const int SHUT_WR = 1;
-    const int SHUT_RDWR = 2;
-
-    [DllImport("libc", SetLastError = true)]
-    static extern int shutdown(int sockfd, int how);
 
     void Shutdown_Transport()
     {
-#if LINUX
-        AutoParallelTickManager.UnregisterParallelTick(ParallelTickHandle);
+    }
+
+    void Cleanup_Transport(int WorkerIndex)
+    {
+        Cleanup_TransportReceiver(WorkerIndex);
+#if !LINUX
+        Socket.Close();
 #endif
-        foreach (var Socket in Sockets)
-        {
-            //int SocketFd = (int)Socket.SafeHandle.DangerousGetHandle();
-            Socket.Close();
-        }
     }
 }

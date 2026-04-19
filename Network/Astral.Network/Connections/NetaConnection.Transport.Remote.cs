@@ -4,6 +4,7 @@ using Astral.Network.Tools;
 using Astral.Network.Transport;
 using Astral.Tick;
 using System.Diagnostics;
+using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
@@ -22,7 +23,7 @@ public partial class NetaConnection
         }
 
         PacketStats.IncrementOutPacket();
-        Socket.SendTo(new ArraySegment<byte>(Packet.GetBuffer(), 0, Packet.Pos), RemoteEndPoint);
+        Socket.SendTo(Packet.GetBuffer().AsSpan(0, Packet.Pos), SocketFlags.None, RemoteAddress);
     }
 
 
@@ -38,9 +39,10 @@ public partial class NetaConnection
 
         PacketStats.IncrementOutPacket();
 #if LINUX
-            Server!.EnqueueOutPacket(Packet, SocketAddr, WorkerIndex);
+        Server!.EnqueueOutPacket(Packet, SocketAddr, WorkerIndex);
 #else
-        Socket.SendTo(new ArraySegment<byte>(Packet.GetBuffer(), 0, Packet.Pos), RemoteEndPoint);
+        //Socket.SendTo(new ArraySegment<byte>(Packet.GetBuffer(), 0, Packet.Pos), RemoteEndPoint);
+        Socket.SendTo(Packet.GetBuffer().AsSpan(0, Packet.Pos), SocketFlags.None, RemoteAddress);
 #endif
     }
 
@@ -64,15 +66,6 @@ public partial class NetaConnection
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Tick_RemoteResends(long NowTicks, int WorkerIndex)
     {
-        long ElapsedTicks = NowTicks - LastResendTicks;
-
-        if (ElapsedTicks < (PacketStats.GetRetransmissionTimeoutTicks()) /** (Context.ClockFrequency / 1000.0)*/)
-        {
-            return;
-        }
-
-        LastResendTicks = NowTicks;
-
         OutPacketWindow.Sweep(NowTicks, PacketStats.GetRetransmissionTimeoutTicks(), (Pkt) =>
         {
             SendPacket_Remote(Pkt, WorkerIndex);
@@ -85,20 +78,45 @@ public partial class NetaConnection
         var ReliablePackets = PooledList<PooledOutPacket>.Rent(64);
         var UnreliablePackets = PooledList<PooledOutPacket>.Rent(64);
 
-        while (SendReliableQueue.Take(out var RelPacket))
+
+        while (ConnectWriterQueue.TryDequeue(out var ConnectWriter))
         {
-            if (RelPacket.Pos > NetaConsts.BufferMaxSizeBytes)
+            var ConnectPacket = CreateReliablePacket(EProtocolMessage.Connect);
+
+            ConnectPacket.Serialize(NextHandshakePacketId++);
+            ConnectPacket.Serialize(ConnectWriter);
+
+            if (ConnectPacket.Pos > NetaConsts.BufferMaxSizeBytes)
             {
-                PktFragmentationHandler.Process(RelPacket, ReliablePackets, NowTicks);
+                PktFragmentationHandler.Process(ConnectPacket, ReliablePackets, NowTicks);
             }
             else
             {
-                RelPacket.FinalizeReliablePacket(NowTicks);
-                ReliablePackets.Add(RelPacket);
+                ConnectPacket.FinalizeReliablePacket(NowTicks);
+                ReliablePackets.Add(ConnectPacket);
             }
         }
-
-        while (SendQueue.Take(out var UnrelPacket)) UnreliablePackets.Add(UnrelPacket);
+        //if (!ConnectionHasFlags(NetaConnectionFlags.Connected))
+        //{
+        //    while (ConnectWriterQueue.TryDequeue(out var ConnectWriter))
+        //    {
+        //        var ConnectPacket = CreateReliablePacket(EProtocolMessage.Connect);
+        //
+        //        ConnectPacket.Serialize(NextHandshakePacketId++);
+        //        ConnectPacket.Serialize(ConnectWriter);
+        //        ConnectWriter.Return();
+        //
+        //        if (ConnectPacket.Pos > NetaConsts.BufferMaxSizeBytes)
+        //        {
+        //            PktFragmentationHandler.Process(ConnectPacket, ReliablePackets, NowTicks);
+        //        }
+        //        else
+        //        {
+        //            ConnectPacket.FinalizeReliablePacket(NowTicks);
+        //            ReliablePackets.Add(ConnectPacket);
+        //        }
+        //    }
+        //}
 
         var ReliableBunches = PooledList<OutBunch>.Rent(64);
         var UnreliableBunches = PooledList<OutBunch>.Rent(64);
@@ -110,15 +128,13 @@ public partial class NetaConnection
             var RelPacket = CreateReliablePacket<NetaConnection_Tick_RemoteSends>(EConnectionPacketMessage.Channel);
 
             EConnectionPacketFlags PktFlags = EConnectionPacketFlags.None;
-            if (PackageMap.HasObjectCreationExports()) PktFlags |= EConnectionPacketFlags.HasObjectCreations; // Server -> Client
-            if (PackageMap.HasObjectMappingExports()) PktFlags |= EConnectionPacketFlags.HasMappings; // Server -> Client
-            if (PackageMap.HasObjectAckExports()) PktFlags |= EConnectionPacketFlags.HasObjectAcks; // Client -> Server
+            if (PackageMap.HasObjectCreationExports()) PktFlags |= EConnectionPacketFlags.HasObjectCreations;
+            if (PackageMap.HasObjectMappingExports()) PktFlags |= EConnectionPacketFlags.HasMappings;
 
             RelPacket.Serialize(PktFlags);
 
-            if (PackageMap.HasObjectCreationExports()) PackageMap.ExportObjectCreation(RelPacket); // Server -> Client
-            if (PackageMap.HasObjectMappingExports()) PackageMap.ExportMappings(RelPacket); // Server -> Client
-            if (PackageMap.HasObjectAckExports()) PackageMap.ExportObjectAcks(RelPacket); // Client -> Server
+            if (PackageMap.HasObjectCreationExports()) PackageMap.ExportObjectCreation(RelPacket);
+            if (PackageMap.HasObjectMappingExports()) PackageMap.ExportMappings(RelPacket);
 
             RelPacket.Serialize((Neta_BunchCountType)ReliableBunches.Count);
             foreach (var Bunch in ReliableBunches)
@@ -266,7 +282,6 @@ public partial class NetaConnection
         }
         catch (Exception Ex)
         {
-            NetGuard.DebugFail(Ex.ToString());
             OnException(Ex, "NetaConnection - ServerTick");
         }
         finally { ExitTick_Remote(); }

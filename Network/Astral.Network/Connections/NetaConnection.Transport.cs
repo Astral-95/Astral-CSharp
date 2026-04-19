@@ -4,15 +4,18 @@ using Astral.Network.Enums;
 using Astral.Network.Interfaces;
 using Astral.Network.Serialization;
 using Astral.Network.Servers;
+using Astral.Network.Sockets;
 using Astral.Network.Toolkit;
 using Astral.Network.Tools;
 using Astral.Network.Transport;
 using Astral.Serialization;
+using Astral.Tick;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 
 namespace Astral.Network.Connections;
 
@@ -53,10 +56,10 @@ public partial class NetaConnection : INetworkObject
         }
     }
 
-    public EndPoint RemoteEndPoint;
-    public EndPointKey RemoteEndPointKey;
-    public EndPoint ReceiveEndPoint = new IPEndPoint(IPAddress.Any, 0);
-    internal NetaServer.SockaddrStorage SocketAddr = default;
+   
+#if LINUX
+    internal SocketAddrStorage SocketAddr = default; 
+#endif
     protected InPacketWindow PacketWindow = new();
     protected OutPacketWindow OutPacketWindow = new();
     public PacketStatistics PacketStats { get; protected set; }
@@ -65,48 +68,43 @@ public partial class NetaConnection : INetworkObject
     internal protected Neta_PacketIdType NextPacketId { get => (Neta_PacketIdType)Interlocked.Increment(ref InternalNextPacketId); }
 
     // Acks ----------------------------------------------------
-    internal protected ConcurrentQueue<PendingAck> OutgoingAcksQueue = new();
+    internal protected Queue<PendingAck> OutgoingAcksQueue = new();
     // Acks ----------------------------------------------------
 
 
-    protected System.Threading.Channels.Channel<PooledInPacket> ConnectReceiveQueue = System.Threading.Channels.Channel.CreateUnbounded<PooledInPacket>();
+    protected System.Threading.Channels.Channel<ByteReader> ConnectReceiveQueue = System.Threading.Channels.Channel.CreateUnbounded<ByteReader>();
 
-    ConcurrentStore<PooledOutPacket> SendQueue { get; set; } = new();
-    ConcurrentStore<PooledOutPacket> SendReliableQueue { get; set; } = new();
-
-
-    //protected readonly object OutReliableResendListLock = new object();
-    //internal protected List<PooledOutPacket> OutReliableResendList { get; set; } = new(128);
+    ConcurrentFastQueue<ByteWriter> ConnectWriterQueue { get; set; } = new();
 
 
     public long LastPingTicks { get; set; } = 0;
-    //long LastSendTicks { get; set; } = 0;
-    long LastResendTicks { get; set; } = 0;
 
 
-    void InitRemote_TransportLayer()
+    void Init_TransportRemote()
     {
         Init_FragmentationHandler();
 
-        SocketAddr = new NetaServer.SockaddrStorage((IPEndPoint)RemoteEndPoint);
-
-        LastResendTicks = Context.Ticks;
+#if LINUX
+        SocketAddr = new SocketAddrStorage(ref NetaRemoteAddr); 
+#endif
     }
 
-    void InitLocal_TransportLayer(int RecBufferSize = 1 * 1024 * 1024, int SendBufferSize = 1 * 1024 * 1024)
+    void Init_TransportLocal(int RecvMiltiMessageBatchSize, int RecBufferSize, int SendBufferSize)
     {
         Init_FragmentationHandler();
 
-        Socket = new(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp)
-        {
-            //DualMode = true,
+        Socket = new(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
 
-            ReceiveBufferSize = RecBufferSize,
-            SendBufferSize = SendBufferSize
-        };
-        //Socket.Bind(new IPEndPoint(IPAddress.Any, 0));
-        Socket.Connect(RemoteEndPoint);
-        LastResendTicks = Context.Ticks;
+        Socket.ReceiveBufferSize = RecBufferSize;
+        Socket.SendBufferSize = SendBufferSize;
+        Socket.Connect(NetaRemoteAddr.GetAddressString(), NetaRemoteAddr.Port);
+        NetaLocalAddr = new NetaAddress((IPEndPoint)Socket.LocalEndPoint!);
+
+#if LINUX
+        SocketAddr = new SocketAddrStorage(ref NetaRemoteAddr);
+
+        this.RecvMiltiMessageBatchSize = (uint)RecvMiltiMessageBatchSize;
+#endif
     }
 
 
@@ -154,47 +152,47 @@ public partial class NetaConnection : INetworkObject
     }
 
 
-    public void Send(PooledOutPacket Packet)
-    {
-#if NETA_DEBUG
-        if (ConnectionHasFlags(NetaConnectionFlags.Shutdown))
-        {
-            Packet.Return();
-            Logger.LogWarning("SendUnreliable(OutPacket): Cannot enqueue ack while shutdown.");
-            return;
-        }
-#endif
-        if (Packet.Pos > NetaConsts.BufferMaxSizeBytes)
-        {
-            Packet.Return();
-            Logger.LogWarning($"SendUnreliable(OutPacket): Sending unreliable packet larger than {NetaConsts.BufferMaxSizeBytes} bytes is not supported.");
-            return;
-        }
-        SendQueue.Add(Packet);
-    }
-
-    public void Send(List<PooledOutPacket> Packets)
-    {
-#if NETA_DEBUG
-        if (ConnectionHasFlags(NetaConnectionFlags.Shutdown))
-        {
-            foreach (var Packet in Packets) Packet.Return();
-            Logger.LogError("SendUnreliable(List<OutPacket>): Cannot enqueue ack while shudown.");
-            return;
-        }
-#endif
-        foreach (var Pkt in Packets)
-        {
-            if (Pkt.Pos > NetaConsts.BufferMaxSizeBytes)
-            {
-                Pkt.Return();
-                Logger.LogError($"SendUnreliable(List<OutPacket>): Sending unreliable packet larger than {NetaConsts.BufferMaxSizeBytes} bytes is not supported.");
-                continue;
-            }
-
-            SendQueue.Add(Pkt);
-        }
-    }
+//    public void Send(PooledOutPacket Packet)
+//    {
+//#if NETA_DEBUG
+//        if (ConnectionHasFlags(NetaConnectionFlags.Shutdown))
+//        {
+//            Packet.Return();
+//            Logger.LogWarning("SendUnreliable(OutPacket): Cannot enqueue ack while shutdown.");
+//            return;
+//        }
+//#endif
+//        if (Packet.Pos > NetaConsts.BufferMaxSizeBytes)
+//        {
+//            Packet.Return();
+//            Logger.LogWarning($"SendUnreliable(OutPacket): Sending unreliable packet larger than {NetaConsts.BufferMaxSizeBytes} bytes is not supported.");
+//            return;
+//        }
+//        SendQueue.Enqueue(Packet);
+//    }
+//
+//    public void Send(List<PooledOutPacket> Packets)
+//    {
+//#if NETA_DEBUG
+//        if (ConnectionHasFlags(NetaConnectionFlags.Shutdown))
+//        {
+//            foreach (var Packet in Packets) Packet.Return();
+//            Logger.LogError("SendUnreliable(List<OutPacket>): Cannot enqueue ack while shudown.");
+//            return;
+//        }
+//#endif
+//        foreach (var Pkt in Packets)
+//        {
+//            if (Pkt.Pos > NetaConsts.BufferMaxSizeBytes)
+//            {
+//                Pkt.Return();
+//                Logger.LogError($"SendUnreliable(List<OutPacket>): Sending unreliable packet larger than {NetaConsts.BufferMaxSizeBytes} bytes is not supported.");
+//                continue;
+//            }
+//
+//            SendQueue.Enqueue(Pkt);
+//        }
+//    }
 
 
 
@@ -207,7 +205,7 @@ public partial class NetaConnection : INetworkObject
     protected void TryPiggyBackAcks(OutPacket Packet)
     {
         PooledList<FlightAck> AcksList = PooledList<FlightAck>.Rent(NetaConsts.AckPerPacketMaxCount);
-        var TicksNow = Context.Ticks;
+        var TicksNow = ParallelTickManager.ThisTickTicks;
         while (OutgoingAcksQueue.TryDequeue(out var OutAck))
         {
             AcksList.Add(new FlightAck(TicksNow, OutAck));
@@ -230,56 +228,35 @@ public partial class NetaConnection : INetworkObject
 
 
 
-
-    class NetaConnection_SendHandshakeWriter { }
     protected Neta_PacketIdType NextHandshakePacketId = 1;
-    protected void SendHandshakeWriter(ByteWriter Writer)
-    {
-        var Packet = CreateReliablePacket<NetaConnection_SendHandshakeWriter>(EProtocolMessage.Connect);
-        Packet.Serialize(NextHandshakePacketId++);
-        Packet.Serialize(Writer);
-
-        ReliablePacket_Local(Packet);
-    }
-
-    protected void SendHandshakeWriter<T>(NetByteWriter Writer)
-    {
-        PooledOutPacket Packet = CreateReliablePacket<T>(EConnectionPacketMessage.Connect);
-        Packet.Serialize(NextHandshakePacketId++);
-        Packet.Serialize(Writer);
-
-        ReliablePacket_Local(Packet);
-    }
+    class NetaConnection_SendHandshakeWriter { }
+    protected void SendHandshakeWriter(ByteWriter Writer) => ConnectWriterQueue.Enqueue(new ByteWriter(Writer));
 
     protected Neta_PacketIdType HandshakePacketExpectedId = 1;
-    private readonly ConcurrentDictionary<Neta_PacketIdType, PooledInPacket> ConnectBuffer = new();
+    private readonly ConcurrentDictionary<Neta_PacketIdType, ByteReader> ConnectBuffer = new();
     protected async Task<ByteReader> ReceiveHandshakeReaderAsync(int TimeoutMs, CancellationToken Token = default)
     {
         if (ConnectBuffer.TryRemove(HandshakePacketExpectedId, out var Buffered))
         {
             HandshakePacketExpectedId++;
-            var Reader = new ByteReader(Buffered);
-            Buffered.Return();
-            return Reader;
+            return Buffered;
         }
 
         while (true)
         {
-            var Packet = await ConnectReceiveQueue.Reader.ReadAsync(Token);
+            var Reader = await ConnectReceiveQueue.Reader.ReadAsync(Token);
 
-            var ConnectId = Packet.Serialize<Neta_PacketIdType>();
+            var ConnectId = Reader.Serialize<Neta_PacketIdType>();
 
             if (ConnectId == HandshakePacketExpectedId)
             {
                 HandshakePacketExpectedId++;
-                var Reader = new ByteReader(Packet);
-                Packet.Return();
                 return Reader;
             }
 
             if (ConnectId > HandshakePacketExpectedId)
             {
-                ConnectBuffer[ConnectId] = Packet;
+                ConnectBuffer[ConnectId] = Reader;
                 continue;
             }
 
@@ -333,7 +310,7 @@ public partial class NetaConnection : INetworkObject
         Writer.Serialize(OutText);
 
         SendHandshakeWriter(Writer);
-        Writer.Return();
+        Writer.Return<NetaConnection_HandleHandshake_Client>();
 
         var Reader = await ReceiveHandshakeReaderAsync(TimeoutMs, CancellationToken).ConfigureAwait(false);
 
@@ -392,7 +369,7 @@ public partial class NetaConnection : INetworkObject
         var Acks = PooledList<FlightAck>.Rent(64);
         Packet.Serialize(Acks);
 
-        var TicksNow = Context.Ticks;
+        var TicksNow = ParallelTickManager.ThisTickTicks;
         foreach (var Ack in Acks)
         {
             if (!OutPacketWindow.Acknowledge(Ack.Id, out var NumTries)) continue;
@@ -435,7 +412,7 @@ public partial class NetaConnection : INetworkObject
 
         if ((Packet.Flags & EPacketFlags.Reliable) != 0)
         {
-            EnqueueOutgoingAck(Packet, Context.Ticks);
+            EnqueueOutgoingAck(Packet, ParallelTickManager.ThisTickTicks);
         }
 
         bool SeenBefore = PacketWindow.CheckPacket(Packet.Id) != PacketWindowStatus.New;
@@ -470,7 +447,7 @@ public partial class NetaConnection : INetworkObject
             case EProtocolMessage.None:
                 throw new InvalidOperationException();
             case EProtocolMessage.Connect:
-                ConnectReceiveQueue.Writer.TryWrite(Packet); return;
+                ConnectReceiveQueue.Writer.TryWrite(new ByteReader(Packet)); Packet.Return(); return;
             case EProtocolMessage.Ping: HandlePing_Local(Packet); Packet.Return(); return;
             case EProtocolMessage.Pong: HandlePong_Remote(Packet); Packet.Return(); return;
             case EProtocolMessage.Reliable:
@@ -488,13 +465,13 @@ public partial class NetaConnection : INetworkObject
         }
     }
 
-    void ReceivePacket(PooledInPacket Packet)
+    unsafe void ReceivePacket(PooledInPacket Packet)
     {
-        var NumBytes = MemoryMarshal.Read<Neta_PacketSizeType>(Packet.GetBuffer());
+        var NumBytes = Unsafe.ReadUnaligned<Neta_PacketSizeType>(Packet.GetBuffer());
 #if NETA_DEBUG
-        if (NumBytes > Packet.GetBuffer().Length)
+        if (NumBytes > Packet.Length)
         {
-            throw new InvalidOperationException($"Numbytes is larger than buffer length.\n Numbytes: {NumBytes} BuffLen: {Packet.GetBuffer().Length}");
+            throw new InvalidOperationException($"Numbytes is larger than buffer length.\n Numbytes: {NumBytes} BuffLen: {Packet.Length}");
         }
         if (NumBytes < 1)
         {
@@ -508,15 +485,19 @@ public partial class NetaConnection : INetworkObject
 
     void Shutdown_TransportLayer()
     {
-        try { Socket.SendTo(Array.Empty<byte>(), RemoteEndPoint); } catch { }
-        if (!ConnectionHasFlags(NetaConnectionFlags.Server)) Socket.Dispose();
-        ConnectReceiveQueue.Writer.TryComplete();
+        
     }
 
     protected virtual void Cleanup_Transport()
     {
-        while (SendQueue.Take(out var Packet)) Packet.Return();
-        while (SendReliableQueue.Take(out var RelPacket)) RelPacket.Return();
+        if (!ConnectionHasFlags(NetaConnectionFlags.Server))
+        {
+            Socket.Dispose();
+        }
+
+        ConnectReceiveQueue.Writer.TryComplete();
+
+        //while (SendReliableQueue.TryDequeue(out var RelPacket)) RelPacket.Return();
 
         OutPacketWindow.Sweep(Int64.MaxValue, PacketStats.GetRetransmissionTimeoutTicks(), (Pkt) => Pkt.Return());
 

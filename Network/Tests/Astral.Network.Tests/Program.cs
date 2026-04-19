@@ -8,36 +8,38 @@ namespace Astral.Network.Tests
 {
 	public class Program
 	{
-		static bool IsRunAsAdmin()
-		{
-			using var identity = WindowsIdentity.GetCurrent();
-			var principal = new WindowsPrincipal(identity);
-			return principal.IsInRole(WindowsBuiltInRole.Administrator);
-		}
+		//static bool IsRunAsAdmin()
+		//{
+		//	using var identity = WindowsIdentity.GetCurrent();
+		//	var principal = new WindowsPrincipal(identity);
+		//	return principal.IsInRole(WindowsBuiltInRole.Administrator);
+		//}
 
 		public static void Main(string[] args)
 		{
-            //if (!IsRunAsAdmin())
-            //{
-            //	// Relaunch the current process with admin privileges
-            //	var exeName = Process.GetCurrentProcess().MainModule.FileName;
-            //	var startInfo = new ProcessStartInfo(exeName)
-            //	{
-            //		UseShellExecute = true,
-            //		Verb = "runas" // triggers UAC prompt
-            //	};
-            //
-            //	try
-            //	{
-            //		Process.Start(startInfo);
-            //	}
-            //	catch
-            //	{
-            //		Console.WriteLine("User declined elevation. Exiting...");
-            //	}
-            //
-            //	return; // exit the non-elevated process
-            //}
+			//if (!IsRunAsAdmin())
+			//{
+			//	// Relaunch the current process with admin privileges
+			//	var exeName = Process.GetCurrentProcess().MainModule.FileName;
+			//	var startInfo = new ProcessStartInfo(exeName)
+			//	{
+			//		UseShellExecute = true,
+			//		Verb = "runas" // triggers UAC prompt
+			//	};
+			//
+			//	try
+			//	{
+			//		Process.Start(startInfo);
+			//	}
+			//	catch
+			//	{
+			//		Console.WriteLine("User declined elevation. Exiting...");
+			//	}
+			//
+			//	return; // exit the non-elevated process
+			//}
+
+			Context.SetThreadAffinity(2);
 
             Thread.CurrentThread.Name = "MainThread";
 

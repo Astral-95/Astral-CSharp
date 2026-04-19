@@ -1,5 +1,8 @@
 ﻿using Astral.Containers;
+using Astral.Logging;
 using Astral.Network.Enums;
+using Astral.Network.Sockets;
+using Astral.Network.Toolkit;
 using Astral.Network.Tools;
 using Astral.Network.Transport;
 using Astral.Tick;
@@ -7,12 +10,37 @@ using System.Diagnostics;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using static Astral.Network.Servers.NetaServer;
+using static System.Runtime.InteropServices.JavaScript.JSType;
 
 namespace Astral.Network.Connections;
 
 public partial class NetaConnection
 {
-    ConcurrentStore<PooledInPacket> IncomingQueue = new ConcurrentStore<PooledInPacket>();
+#if LINUX
+    bool RevMultiMessageInitialized { get; set; } = false;
+    uint RecvMiltiMessageBatchSize { get; set; }
+
+    Mmsghdr[] RecvMsgVec;
+    IOVector[] RecvIoVecs;
+    SocketAddrStorage[] RecvAddresses;
+    PooledInPacket[] RecvMultiMessagePackets;
+
+
+    unsafe Mmsghdr* RecvMsgVecPtr;
+    unsafe IOVector* RecvIoVecsPtr;
+    unsafe SocketAddrStorage* RecvAddressesPtr;
+
+    nint MsgvecPtr;
+    nint IovecsPtr;
+    int ScratchCapacity;
+
+    int SendMultiMessageOutgoingQueueCount = 0;
+    PendingOutPacket[] SendMultiMessageOutgoingQueue = new PendingOutPacket[16]; 
+#endif
+
+
+    ConcurrentFastQueue<PooledInPacket> IncomingQueue = new ConcurrentFastQueue<PooledInPacket>();
 
     protected void SendPacket_Local(OutPacket Packet)
     {
@@ -25,21 +53,36 @@ public partial class NetaConnection
         }
 
         PacketStats.IncrementOutPacket();
+
+#if !LINUX
         Socket.Send(new ArraySegment<byte>(Packet.GetBuffer(), 0, Packet.Pos));
-    }
-
-    void ReliablePacket_Local(PooledOutPacket Packet)
-    {
-        SendReliableQueue.Add(Packet);
-    }
-
-    void ReliablePacket_Local(List<PooledOutPacket> Packets)
-    {
-        foreach (var Packet in Packets)
+#else   
+        if (SendMultiMessageOutgoingQueueCount >= SendMultiMessageOutgoingQueue.Length)
         {
-            SendReliableQueue.Add(Packet);
+            int NewSize = SendMultiMessageOutgoingQueue.Length == 0 ? 64 : SendMultiMessageOutgoingQueue.Length * 2;
+            Array.Resize(ref SendMultiMessageOutgoingQueue, NewSize);
         }
+
+        ref PendingOutPacket Pending = ref SendMultiMessageOutgoingQueue[SendMultiMessageOutgoingQueueCount++];
+
+        Packet.GetBuffer().AsSpan(0, Packet.Pos).CopyTo(MemoryMarshal.CreateSpan(ref Pending.Data[0], Packet.Pos));
+        Pending.Length = Packet.Pos;
+        Pending.Destination = SocketAddr;
+#endif
     }
+
+    //void ReliablePacket_Local(PooledOutPacket Packet)
+    //{
+    //    SendReliableQueue.Enqueue(Packet);
+    //}
+    //
+    //void ReliablePacket_Local(List<PooledOutPacket> Packets)
+    //{
+    //    foreach (var Packet in Packets)
+    //    {
+    //        SendReliableQueue.Enqueue(Packet);
+    //    }
+    //}
 
     class NetaSocket_HandlePing_Local { }
     void HandlePing_Local(InPacket Packet)
@@ -66,155 +109,146 @@ public partial class NetaConnection
 
 
 
-    class NetaSocket_PostReceive { }
-    void PostReceive(SocketAsyncEventArgs SocketArgs)
+    class NetaConnection_Tick_LocalReceive_1 { }
+    class NetaConnection_Tick_LocalReceive_2 { }
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public unsafe void Tick_LocalReceive()
     {
-        if (ConnectionHasFlags(NetaConnectionFlags.Shutdown)) return;
-
-        try
+#if LINUX
+        if (!RevMultiMessageInitialized)
         {
-            var Packet = PooledInPacket.Rent<NetaSocket_PostReceive>();
+            RevMultiMessageInitialized = true;
 
-            SocketArgs.SetBuffer(Packet.GetBuffer());
-            SocketArgs.UserToken = Packet;
+            // Allocate pinned arrays to ensure pointers remain valid for the life of the object
+            RecvMsgVec = GC.AllocateArray<Mmsghdr>((int)RecvMiltiMessageBatchSize, pinned: true);
+            RecvIoVecs = GC.AllocateArray<IOVector>((int)RecvMiltiMessageBatchSize, pinned: true);
+            RecvAddresses = GC.AllocateArray<SocketAddrStorage>((int)RecvMiltiMessageBatchSize, pinned: true);
+            RecvMultiMessagePackets = GC.AllocateArray<PooledInPacket>((int)RecvMiltiMessageBatchSize, pinned: true);
 
-            if (!Socket.ReceiveFromAsync(SocketArgs)) OnReceiveCompleted(null, SocketArgs);
-        }
-        catch (Exception Ex)
-        {
-            NetGuard.Fail($"NetaSocket - PostReceive Exception: {Ex}");
-        }
-    }
+            // Cache the pointers so we don't have to fix them every tick
+            RecvMsgVecPtr = (Mmsghdr*)Unsafe.AsPointer(ref RecvMsgVec[0]);
+            RecvIoVecsPtr = (IOVector*)Unsafe.AsPointer(ref RecvIoVecs[0]);
+            RecvAddressesPtr = (SocketAddrStorage*)Unsafe.AsPointer(ref RecvAddresses[0]);
 
-    class NetaSocket_OnReceiveCompleted { }
-    void OnReceiveCompleted(object? sender, SocketAsyncEventArgs SocketArgs)
-    {
-        PooledInPacket? Packet = (PooledInPacket)SocketArgs.UserToken!;
-        try
-        {
-            int MaxInline = 0;
-            while (true)
+            for (int i = 0; i < RecvMiltiMessageBatchSize; i++)
             {
+                var Pkt = PooledInPacket.Rent<NetaConnection_Tick_LocalReceive_1>();
+                RecvMultiMessagePackets[i] = Pkt;
+                // Point the IOVector to the specific PacketBuffer index
+                RecvIoVecsPtr[i].Base = (IntPtr)Pkt.GetBuffer();
+                RecvIoVecsPtr[i].Length = (IntPtr)NetaConsts.BufferMaxSizeBytes;
 
-                if (SocketArgs.BytesTransferred < 1 || SocketArgs.SocketError != SocketError.Success)
+                // Link the Mmsghdr to the corresponding IOVector and Address slot
+                RecvMsgVecPtr[i].msg_hdr.msg_iov = (IntPtr)(&RecvIoVecsPtr[i]);
+                RecvMsgVecPtr[i].msg_hdr.msg_iovlen = (IntPtr)1;
+                RecvMsgVecPtr[i].msg_hdr.msg_name = (IntPtr)(&RecvAddressesPtr[i]);
+                RecvMsgVecPtr[i].msg_hdr.msg_namelen = sizeof(SocketAddrStorage);
+            }
+        }
+
+        while (true)
+        {
+            const int MSG_DONTWAIT = 0x40;
+
+            var NumPkts = Socket.Recvmmsg(RecvMsgVecPtr, RecvMiltiMessageBatchSize, MSG_DONTWAIT, null);
+
+            if (NumPkts < 0)
+            {
+                int err = Marshal.GetLastPInvokeError();
+                if (err == 4 || err == 11 || !ConnectionHasFlags(NetaConnectionFlags.Connected)) return; // EINTR or EAGAIN/EWOULDBLOCK or not connected
+
+                Shutdown();
+                Logger.LogError($"Tick_LocalReceive: recvmmsg failed with errno {err}");
+                return;
+            }
+
+            if (NumPkts == 0) return;
+
+            for (int i = 0; i < NumPkts; i++)
+            {
+                int len = (int)RecvMsgVecPtr[i].msg_len;
+                RecvMsgVecPtr[i].msg_hdr.msg_namelen = sizeof(SocketAddrStorage);
+
+                if (len < 1)
                 {
-                    Packet.Return();
                     Shutdown();
                     return;
                 }
 
-                //IncomingQueue.Add((Packet, new EndPointKey((IPEndPoint)SocketArgs.RemoteEndPoint!)));
+                var InPacket = RecvMultiMessagePackets[i];
+                var Key = new NetaAddress(ref RecvAddressesPtr[i]);
 
-                Packet = PooledInPacket.Rent<NetaSocket_OnReceiveCompleted>();
+                var NumBytes = Unsafe.ReadUnaligned<Neta_PacketSizeType>(InPacket.GetBuffer());
 
-                SocketArgs.SetBuffer(Packet.GetBuffer());
-                SocketArgs.UserToken = Packet;
-
-                if (Socket.ReceiveFromAsync(SocketArgs))
+                if (NumBytes > InPacket.Length)
                 {
-                    break;
+                    Logger.LogError($"{NetModeString}: Numbytes is larger than buffer length.\n Numbytes: {NumBytes} BuffLen: {InPacket.Length}");
+                    Shutdown();
+                    return;
                 }
-                else
+                if (NumBytes < 1)
                 {
-                    if (MaxInline > 128)
+                    Logger.LogError($"{NetModeString}: Numbytes field is less than [1]. Value: {NumBytes}");
+                    Shutdown();
+                    return;
+                }
+
+                InPacket.Num = NumBytes;
+
+                try
+                {
+                    Dispatch_IncomingPacket(InPacket);
+                }
+                catch (Exception Ex)
+                {
+                    if (!ConnectionHasFlags(NetaConnectionFlags.Shutdown))
                     {
-                        Logger.LogWarning("OnReceiveCompleted: SAEA inline loop overload. Switching threads.");
-                        ThreadPool.QueueUserWorkItem(_ => { OnReceiveCompleted(null, SocketArgs); });
-                        return;
+                        Logger.LogError($"{NetModeString}: {Ex}");
                     }
 
-                    MaxInline++;
-                    continue;
+                    InPacket.Return();
+
+                    Shutdown();
                 }
-
-            }
-        }
-        catch (Exception Ex)
-        {
-            try { Packet.Return(); } catch (Exception PktEx) { Logger.LogCritical(new AggregateException(Ex, PktEx).ToString()); }
-
-            if (Ex is not ObjectDisposedException && Ex is not OperationCanceledException)
-            {
-                Logger.LogCritical($"PostReceive Exception: {Ex}");
-            }
-
-            Shutdown();
-            return;
-        }
-    }
-
-
-    class NetaConnection_ReceiveLoopAsync_1 { }
-    class NetaConnection_ReceiveLoopAsync_2 { }
-    class NetaConnection_ReceiveLoopAsync_3 { }
-    async Task ReceiveLoopAsync()
-    {
-        var Packet = PooledInPacket.Rent<NetaConnection_ReceiveLoopAsync_1>();
-        Packet.Return();
-        while (!ConnectionHasFlags(NetaConnectionFlags.Shutdown))
-        {
-            Packet = PooledInPacket.Rent<NetaConnection_ReceiveLoopAsync_2>();
-            try
-            {
-                // TODO: handle receiving a buffer larger than Packet.Buffer more cleanly
-                SocketReceiveFromResult Result = await Socket.ReceiveFromAsync(Packet.GetBuffer(), ReceiveEndPoint);
-                if (ConnectionHasFlags(NetaConnectionFlags.Shutdown)) break;
-
-                if (!RemoteEndPoint.Equals(Result.RemoteEndPoint)) continue;
-
-                if (Result.ReceivedBytes < 1) break;
-
-                IncomingQueue.Add(Packet);
-
-                while (Socket.Available > 0)
+                finally
                 {
-                    Packet = PooledInPacket.Rent<NetaConnection_ReceiveLoopAsync_3>();
-
-                    int BytesReceived = Socket.ReceiveFrom(Packet.GetBuffer(), ref ReceiveEndPoint);
-
-                    if (!RemoteEndPoint.Equals(ReceiveEndPoint)) continue;
-
-                    if (BytesReceived < 1) break;
-
-                    IncomingQueue.Add(Packet);
+                    var NewInPacket = PooledInPacket.Rent<NetaConnection_Tick_LocalReceive_2>();
+                    RecvMultiMessagePackets[i] = NewInPacket;
+                    RecvIoVecsPtr[i].Base = (IntPtr)NewInPacket.GetBuffer();
                 }
             }
-            catch (Exception Ex)
-            {
-                OnException(Ex, "NetaConnection.ReceiveLoopAsync");
-                Packet.TryReturn();
-            }
+
+            if (NumPkts < RecvMiltiMessageBatchSize) return;
         }
-        Packet.TryReturn();
-        Shutdown();
-    }
-
-
-
-
-
-
-    class NetaConnection_Tick_LocalReceive { }
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void Tick_LocalReceive()
-    {
+#else
         PooledInPacket? Packet = null;
 
         try
         {
-            while (Socket.Available > 0)
+            while (Socket.Poll(0, SelectMode.SelectRead))
             {
-                Packet = PooledInPacket.Rent<NetaConnection_Tick_LocalReceive>();
+                Packet = PooledInPacket.Rent<NetaConnection_Tick_LocalReceive_1>();
 
-                int BytesReceived = Socket.Receive(Packet.GetBuffer());
-
-                if (BytesReceived < 1) break;
-
-                var NumBytes = MemoryMarshal.Read<Neta_PacketSizeType>(Packet.GetBuffer());
-#if NETA_DEBUG
-                if (NumBytes > Packet.GetBuffer().Length)
+                if (ConnectionHasFlags(NetaConnectionFlags.Shutdown))
                 {
-                    throw new InvalidOperationException($"Numbytes is larger than buffer length.\n Numbytes: {NumBytes} BuffLen: {Packet.GetBuffer().Length}");
+                    Packet.Return();
+                    return;
+                }
+
+                int BytesReceived = Socket.Receive(Packet.AsSpan());
+
+                if (BytesReceived < 1)
+                {
+                    Packet.Return();
+                    Shutdown();
+                    break;
+                }
+
+                var NumBytes = Unsafe.ReadUnaligned<Neta_PacketSizeType>(Packet.GetBuffer());
+#if NETA_DEBUG
+                if (NumBytes > Packet.Length)
+                {
+                    throw new InvalidOperationException($"Numbytes is larger than buffer length.\n Numbytes: {NumBytes} BuffLen: {Packet.Length}");
                 }
                 if (NumBytes < 1)
                 {
@@ -229,23 +263,19 @@ public partial class NetaConnection
         catch (Exception Ex)
         {
             Packet?.TryReturn();
-            Logger.LogError($"{NetModeString}: {Ex}");
+            if (!ConnectionHasFlags(NetaConnectionFlags.Shutdown))
+            {
+                Logger.LogError($"{NetModeString}: {Ex}");
+            }
+            
             Shutdown();
         }
+#endif
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Tick_LocalResends(long NowTicks)
     {
-        long ElapsedTicks = NowTicks - LastResendTicks;
-
-        if (ElapsedTicks < (PacketStats.GetRetransmissionTimeoutTicks()) /** (Context.ClockFrequency / 1000.0)*/)
-        {
-            return;
-        }
-
-        LastResendTicks = NowTicks;
-
         OutPacketWindow.Sweep(NowTicks, PacketStats.GetRetransmissionTimeoutTicks(), (Pkt) =>
         {
             SendPacket_Local(Pkt);
@@ -260,20 +290,26 @@ public partial class NetaConnection
         var ReliablePackets = PooledList<PooledOutPacket>.Rent(64);
         var UnreliablePackets = PooledList<PooledOutPacket>.Rent(64);
 
-        while (SendReliableQueue.Take(out var RelPacket))
+        if (!ConnectionHasFlags(NetaConnectionFlags.Connected))
         {
-            if (RelPacket.Pos > NetaConsts.BufferMaxSizeBytes)
+            while (ConnectWriterQueue.TryDequeue(out var ConnectWriter))
             {
-                PktFragmentationHandler.Process(RelPacket, ReliablePackets, NowTicks);
-            }
-            else
-            {
-                RelPacket.FinalizeReliablePacket(NowTicks);
-                ReliablePackets.Add(RelPacket);
+                var ConnectPacket = CreateReliablePacket(EProtocolMessage.Connect);
+
+                ConnectPacket.Serialize(NextHandshakePacketId++);
+                ConnectPacket.Serialize(ConnectWriter);
+
+                if (ConnectPacket.Pos > NetaConsts.BufferMaxSizeBytes)
+                {
+                    PktFragmentationHandler.Process(ConnectPacket, ReliablePackets, NowTicks);
+                }
+                else
+                {
+                    ConnectPacket.FinalizeReliablePacket(NowTicks);
+                    ReliablePackets.Add(ConnectPacket);
+                }
             }
         }
-
-        while (SendQueue.Take(out var UnrelPacket)) UnreliablePackets.Add(UnrelPacket);
 
         var ReliableBunches = PooledList<OutBunch>.Rent(64);
         var UnreliableBunches = PooledList<OutBunch>.Rent(64);
@@ -285,15 +321,11 @@ public partial class NetaConnection
             var RelPacket = CreateReliablePacket<NetaConnection_Tick_LocalSends>(EConnectionPacketMessage.Channel);
 
             EConnectionPacketFlags PktFlags = EConnectionPacketFlags.None;
-            if (PackageMap.HasObjectCreationExports()) PktFlags |= EConnectionPacketFlags.HasObjectCreations; // Server -> Client
-            if (PackageMap.HasObjectMappingExports()) PktFlags |= EConnectionPacketFlags.HasMappings; // Server -> Client
-            if (PackageMap.HasObjectAckExports()) PktFlags |= EConnectionPacketFlags.HasObjectAcks; // Client -> Server
+            if (PackageMap.HasObjectAckExports()) PktFlags |= EConnectionPacketFlags.HasObjectAcks;
 
             RelPacket.Serialize(PktFlags);
 
-            if (PackageMap.HasObjectCreationExports()) PackageMap.ExportObjectCreation(RelPacket); // Server -> Client
-            if (PackageMap.HasObjectMappingExports()) PackageMap.ExportMappings(RelPacket); // Server -> Client
-            if (PackageMap.HasObjectAckExports()) PackageMap.ExportObjectAcks(RelPacket); // Client -> Server
+            if (PackageMap.HasObjectAckExports()) PackageMap.ExportObjectAcks(RelPacket);
 
             RelPacket.Serialize((Neta_BunchCountType)ReliableBunches.Count);
             foreach (var Bunch in ReliableBunches)
@@ -374,6 +406,65 @@ public partial class NetaConnection
         AcksList.Return();
     }
 
+#if LINUX
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    unsafe void Tick_LocalFlushSendMultiMessage()
+    {
+        if (SendMultiMessageOutgoingQueueCount == 0) return;
+
+        if (SendMultiMessageOutgoingQueueCount > ScratchCapacity)
+        {
+            int newSize = Math.Max(SendMultiMessageOutgoingQueueCount, Math.Max(ScratchCapacity * 2, 64));
+
+            if (MsgvecPtr != 0) NativeMemory.Free((void*)MsgvecPtr);
+            if (IovecsPtr != 0) NativeMemory.Free((void*)IovecsPtr);
+
+            MsgvecPtr = (nint)NativeMemory.AllocZeroed((nuint)(newSize * sizeof(Mmsghdr)));
+            IovecsPtr = (nint)NativeMemory.AllocZeroed((nuint)(newSize * sizeof(IOVector)));
+            ScratchCapacity = newSize;
+        }
+
+        try
+        {
+            Mmsghdr* pMsgVec = (Mmsghdr*)MsgvecPtr;
+            IOVector* pIoVecs = (IOVector*)IovecsPtr;
+
+            fixed (PendingOutPacket* pQueue = SendMultiMessageOutgoingQueue)
+            {
+                for (int i = 0; i < SendMultiMessageOutgoingQueueCount; i++)
+                {
+                    byte* pPacketData = (byte*)&pQueue[i].Data;
+                    void* pPacketAddr = &pQueue[i].Destination;
+
+                    pIoVecs[i].Base = (IntPtr)pPacketData;
+                    pIoVecs[i].Length = (IntPtr)pQueue[i].Length;
+
+                    pMsgVec[i].msg_hdr.msg_name = (IntPtr)pPacketAddr;
+                    pMsgVec[i].msg_hdr.msg_namelen = SendMultiMessageOutgoingQueue[i].Destination.Len;
+                    pMsgVec[i].msg_hdr.msg_iov = (IntPtr)(&pIoVecs[i]);
+                    pMsgVec[i].msg_hdr.msg_iovlen = (IntPtr)1;
+                    pMsgVec[i].msg_hdr.msg_control = IntPtr.Zero;
+                    pMsgVec[i].msg_hdr.msg_controllen = IntPtr.Zero;
+                    pMsgVec[i].msg_hdr.msg_flags = 0;
+                    pMsgVec[i].msg_len = 0;
+                }
+
+                int sent = Socket.SendMultiMessage(pMsgVec, (uint)SendMultiMessageOutgoingQueueCount, 0);
+
+                if (sent < 0)
+                {
+                    int err = Marshal.GetLastWin32Error();
+                    Logger.LogError($"Tick_LocalFlushSendMultiMessage: SendMultiMessage failed: errno {err}");
+                }
+            }
+        }
+        finally
+        {
+            SendMultiMessageOutgoingQueueCount = 0;
+        }
+    } 
+#endif
+
 
     private Int32 InTickLocal = 0;
     [Conditional("DEBUG")]
@@ -397,22 +488,29 @@ public partial class NetaConnection
         {
             if (ConnectionHasFlags(NetaConnectionFlags.Cleaned)) return;
             Cleanup();
+
+#if LINUX
+            for (int i = 0; i < RecvMiltiMessageBatchSize; i++)
+            {
+                RecvMultiMessagePackets[i].Return();
+            }
+#endif
             return;
         }
         EnterTick_Local();
         var TicksNow = ParallelTickManager.ThisTickTicks;
-        //var TicksNow = AutoParallelTickManager.CurrentTicks;
         try
         {
             Tick_LocalReceive();
             Tick_LocalResends(TicksNow);
-            //ProcessBunchSends(TicksNow);
             Tick_LocalSends(TicksNow);
             Tick_LocalAckSends(TicksNow);
+#if LINUX
+            Tick_LocalFlushSendMultiMessage();
+#endif
         }
         catch (Exception Ex)
         {
-            NetGuard.DebugFail(Ex.ToString());
             OnException(Ex, "NetaConnection - ClientTick");
         }
         finally { ExitTick_Local(); }

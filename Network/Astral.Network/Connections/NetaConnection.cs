@@ -15,39 +15,41 @@ using Astral.Network.Transport;
 using Astral.Tick;
 using System.Net;
 using System.Runtime.CompilerServices;
+using System.Net.Sockets;
+using Astral.Serialization;
 
 namespace Astral.Network.Connections;
-
-public enum NetaConnectionMode : byte
-{
-    Auto,
-    AutoDeferred,
-    Manual
-}
 public partial class NetaConnection : INetworkObject
 {
+    static int ThreadIndex = -1;
+    static int NextThreadIndex { get => ThreadIndex + 1 >= ParallelTickManager.WorkerCount ? ThreadIndex = 0 : ++ThreadIndex; }
+
     protected NetaLogger Logger;
     public NetaSocket Socket { get; set; }
     public NetaDriver Driver { get; internal protected set; }
     public NetaServer? Server { get; internal protected set; }
-    public int WorkerIndex { get; internal set; } = 0;
+    public int WorkerIndex { get; internal set; } = -1;
     public ConnectionPackageMap PackageMap { get; protected set; }
     public NetaChannel Channel { get; internal protected set; }
 
-    public NetaConnectionMode Mode { get; private set; }
-
     int ConnectionFlags = 0;
+
+    public NetaAddress NetaLocalAddr;
+    public NetaAddress NetaRemoteAddr;
+    public SocketAddress RemoteAddress { get; private set; }
+
 
     public event Action<NetaConnection>? OnConnectionClosed;
 
-    internal ConcurrentStore<OutBunch> OutBunchQueue = new ConcurrentStore<OutBunch>();
+    internal ConcurrentFastQueue<OutBunch> OutBunchQueue = new ConcurrentFastQueue<OutBunch>();
+    internal ConcurrentFastQueue<OutBunch> OutReliableBunchQueue = new ConcurrentFastQueue<OutBunch>();
 
     internal NetaChannel?[] Channels = new NetaChannel?[NetaConsts.ConnectionChannelsReserve];
 
     internal Task? ReceiveTask { get; set; }
     internal Task? DeferredReceiveTask { get; set; }
 
-    long TickActionId;
+    TickHandle TickHandle;
 
     bool Begun = false;
 
@@ -57,7 +59,7 @@ public partial class NetaConnection : INetworkObject
     internal protected NetaConnection()
     {
         PrivateNetworkId = 1;
-
+        WorkerIndex = NextThreadIndex;
         PackageMap = new ConnectionPackageMap(this);
     }
 
@@ -105,11 +107,11 @@ public partial class NetaConnection : INetworkObject
     }
 
 
-    public void InitLocalConnection(NetaDriver Driver, EndPoint RemoteEndPoint, NetaConnectionMode Mode, PacketStatistics? PktStats = null, int RecBufferSize = 64 * 1024 * 1024, int SendBufferSize = 64 * 1024 * 1024)
+    public void InitLocalConnection(NetaDriver Driver, IPEndPoint RemoteEndPoint, PacketStatistics? PktStats = null, int RecvMiltiMessageBatchSize = 32, int RecBufferSize = 64 * 1024 * 1024, int SendBufferSize = 64 * 1024 * 1024)
     {
-        InitLocalConnection(Driver, new EndPointKey((IPEndPoint)RemoteEndPoint), Mode, PktStats, RecBufferSize, SendBufferSize);
+        InitLocalConnection(Driver, new NetaAddress(RemoteEndPoint), PktStats, RecvMiltiMessageBatchSize, RecBufferSize, SendBufferSize);
     }
-    public void InitLocalConnection(NetaDriver Driver, EndPointKey RemoteEndPointKey, NetaConnectionMode Mode, PacketStatistics? PktStats = null, int RecBufferSize = 64 * 1024 * 1024, int SendBufferSize = 64 * 1024 * 1024)
+    public void InitLocalConnection(NetaDriver Driver, NetaAddress RemoteEndPointKey, PacketStatistics? PktStats = null, int RecvMiltiMessageBatchSize = 32, int RecBufferSize = 64 * 1024 * 1024, int SendBufferSize = 64 * 1024 * 1024)
     {
         if (Begun) return;
         Begun = true;
@@ -117,13 +119,13 @@ public partial class NetaConnection : INetworkObject
         NetModeString = "Client";
         Logger = CreateLogger(NetModeString);
         this.Driver = Driver;
-        this.Mode = Mode;
-        this.RemoteEndPointKey = RemoteEndPointKey;
-        this.RemoteEndPoint = RemoteEndPointKey.ToEndPoint();
+        this.NetaRemoteAddr = RemoteEndPointKey;
+        RemoteAddress = RemoteEndPointKey.ToSocketAddress();
+
         if (PktStats == null) PktStats = new PacketStatistics();
         PacketStats = PktStats;
 
-        InitLocal_TransportLayer(RecBufferSize, SendBufferSize);
+        Init_TransportLocal(RecvMiltiMessageBatchSize, RecBufferSize, SendBufferSize);
 
         PackageMap = new ConnectionPackageMap(this);
         Channels[0] = Channel = CreateChannel(0);
@@ -131,24 +133,23 @@ public partial class NetaConnection : INetworkObject
         StartLocal();
     }
 
-    internal void InitRemoteConnection(NetaDriver Driver, NetaSocket Socket, EndPointKey RemoteEndPointKey, NetaConnectionMode Mode, PacketStatistics? PktStats = null)
+    internal void InitRemoteConnection(NetaDriver Driver, NetaSocket Socket, NetaAddress RemoteEndPointKey, PacketStatistics? PktStats = null)
     {
         if (Begun) return;
         Begun = true;
         this.Driver = Driver;
         this.Socket = Socket;
         NetModeString = "Server";
-        this.RemoteEndPointKey = RemoteEndPointKey;
-        RemoteEndPoint = RemoteEndPointKey.ToEndPoint();
+        this.NetaRemoteAddr = RemoteEndPointKey;
+        RemoteAddress = RemoteEndPointKey.ToSocketAddress();
 
         Logger = CreateLogger(NetModeString);
 
         ConnectionSetFlags(NetaConnectionFlags.Server);
-        this.Mode = Mode;
 
         if (PktStats == null) PktStats = new PacketStatistics();
         PacketStats = PktStats;
-        InitRemote_TransportLayer();
+        Init_TransportRemote();
 
         PackageMap = new ConnectionPackageMap(this);
         Channels[0] = Channel = CreateChannel(0);
@@ -156,65 +157,18 @@ public partial class NetaConnection : INetworkObject
         StartRemote();
     }
 
-    protected void StartLocal_Auto()
-    {
-        throw new NotImplementedException();
-    }
 
-    protected void StartLocal_AutoDeferred()
-    {
-        if (TickActionId != 0) return;
-        //DeferredReceiveTask = Task.Run(ReceiveLoopAsync);
-        TickActionId = ParallelTickManager.Register(Tick_Local);
-    }
-
-
-    protected void StartRemote_Auto()
-    {
-        throw new NotImplementedException();
-    }
-    protected void StartRemote_AutoDeferred()
+    protected void StartRemote()
     {
         //if (TickActionId != 0) return;
         //TickActionId = AutoParallelTickManager.Register(Tick_Remote);
     }
 
-
-
-    protected void StartRemote()
-    {
-        if (TickActionId != 0) return;
-
-        switch (Mode)
-        {
-            case NetaConnectionMode.Auto:
-                StartRemote_Auto(); break;
-            case NetaConnectionMode.AutoDeferred:
-                StartRemote_AutoDeferred(); break;
-            case NetaConnectionMode.Manual:
-                break;
-            default:
-                throw new InvalidOperationException();
-        }
-
-        //TickActionId = AutoParallelTickManager.Register(ServerTick);
-    }
-
     protected void StartLocal()
     {
-        if (TickActionId != 0) return;
-
-        switch (Mode)
-        {
-            case NetaConnectionMode.Auto:
-                StartLocal_Auto(); break;
-            case NetaConnectionMode.AutoDeferred:
-                StartLocal_AutoDeferred(); break;
-            case NetaConnectionMode.Manual:
-                break;
-            default:
-                throw new InvalidOperationException();
-        }
+        if (TickHandle.IsValid()) return;
+        var Index = WorkerIndex;
+        TickHandle = ParallelTickManager.Register(Tick_Local, WorkerIndex: WorkerIndex);
     }
 
 
@@ -257,7 +211,7 @@ public partial class NetaConnection : INetworkObject
             case EConnectionPacketMessage.Control:
                 throw new NotImplementedException();
             case EConnectionPacketMessage.Connect:
-                ConnectReceiveQueue.Writer.TryWrite(Packet); break;
+                ConnectReceiveQueue.Writer.TryWrite(new ByteReader(Packet)); break;
             case EConnectionPacketMessage.Remote:
                 throw new NotImplementedException();
             case EConnectionPacketMessage.Channel:
@@ -375,15 +329,83 @@ public partial class NetaConnection : INetworkObject
 
 
 
-    public void SendBunch(OutBunch Bunch)
+    public bool SendBunch(OutBunch Bunch)
     {
         if (ConnectionHasFlags(NetaConnectionFlags.Shutdown))
         {
             Bunch.Return();
+            return false;
+        }
+
+        //int QueueCount = OutBunchQueue.Count;
+        //
+        //if (QueueCount > 25)
+        //{
+        //    if (QueueCount >= 50)
+        //    {
+        //        Bunch.Return();
+        //        return false;
+        //    }
+        //
+        //    // Linear drop chance: 0% at 1000, 100% at 2500
+        //    double DepthDropChance = (QueueCount - 25.0) / 25.0;
+        //    if (Random.Shared.NextDouble() < DepthDropChance)
+        //    {
+        //        Bunch.Return();
+        //        return false;
+        //    }
+        //}
+
+        long Load = ParallelTickManager.SmoothedLastFrameTime;
+
+        if (Load > 20.0)
+        {
+            // 0% at 20ms, 100% at 50ms
+            double dropChance = (Load - 20.0) / 30.0;
+
+            if (Random.Shared.NextDouble() < dropChance)
+            {
+                Bunch.Return();
+                return false; // Shed the load
+            }
         }
 
         PacketStats.IncrementAppOut();
-        OutBunchQueue.Add(Bunch);
+        OutBunchQueue.Enqueue(Bunch);
+        return true;
+    }
+
+    public bool SendReliableBunch(OutBunch Bunch)
+    {
+        if (ConnectionHasFlags(NetaConnectionFlags.Shutdown))
+        {
+            Bunch.Return();
+            return false;
+        }
+
+        if (OutReliableBunchQueue.Count > 1000)
+        {
+            Bunch.Return();
+            return false;
+        }
+
+        long Load = ParallelTickManager.SmoothedLastFrameTime;
+
+        if (Load > 75.0)
+        {
+            // 0% at 75ms, 100% at 150ms
+            double dropChance = (Load - 75.0) / 50.0;
+
+            if (Random.Shared.NextDouble() < dropChance)
+            {
+                Bunch.Return();
+                return false; // Shed the load
+            }
+        }
+
+        PacketStats.IncrementAppOut();
+        OutReliableBunchQueue.Enqueue(Bunch);
+        return true;
     }
 
     public void SendBunchImmediate(OutBunch Bunch)
@@ -395,16 +417,14 @@ public partial class NetaConnection : INetworkObject
 
     void DequeueBunches(List<OutBunch> ReliableBunches, List<OutBunch> UnreliableBunches)
     {
-        while (OutBunchQueue.Take(out var Bunch))
+        while (OutBunchQueue.TryDequeue(out var Bunch))
         {
-            if ((Bunch.Flags & EBunchFlags.Reliable) != 0)
-            {
-                ReliableBunches.Add(Bunch);
-            }
-            else
-            {
-                UnreliableBunches.Add(Bunch);
-            }
+            UnreliableBunches.Add(Bunch);
+        }
+
+        while (OutReliableBunchQueue.TryDequeue(out var ReliableBunch))
+        {
+            ReliableBunches.Add(ReliableBunch);
         }
     }
 
@@ -515,21 +535,14 @@ public partial class NetaConnection : INetworkObject
 
 
 
-
-
-
-    void Disconnect()
+    public virtual void Shutdown()
     {
-        if (ConnectionHasFlags(NetaConnectionFlags.Shutdown))
-        {
-            return;
-        }
-
+        if (ConnectionHasFlags(NetaConnectionFlags.Shutdown)) return;
         ConnectionSetFlags(NetaConnectionFlags.Shutdown);
 
         if (ConnectionHasFlags(NetaConnectionFlags.Pending))
         {
-            ConnectionSetFlags(NetaConnectionFlags.Pending);
+            ConnectionClearFlags(NetaConnectionFlags.Pending);
         }
         else
         {
@@ -539,15 +552,14 @@ public partial class NetaConnection : INetworkObject
             Server?.ConnectionClosed(this);
         }
 
-        Shutdown();
-    }
-    public virtual void Shutdown()
-    {
-        if (ConnectionHasFlags(NetaConnectionFlags.Shutdown)) return;
-        ConnectionSetFlags(NetaConnectionFlags.Shutdown);
-        Disconnect();
-        if (TickActionId != 0) ParallelTickManager.Unregister(TickActionId);
-        TickActionId = 0;
+        if (ConnectionHasFlags(NetaConnectionFlags.Server))
+        {
+            try
+            {
+                Socket.SendTo(new byte[0], SocketFlags.None, RemoteAddress);
+            }
+            catch { }
+        }
 
         Shutdown_TransportLayer();
 
@@ -562,7 +574,9 @@ public partial class NetaConnection : INetworkObject
 
     protected virtual void Cleanup()
     {
-        while (OutBunchQueue.Take(out var Bunch)) Bunch.Return();
+        if (TickHandle.IsValid()) ParallelTickManager.Unregister(ref TickHandle);
+
+        while (OutBunchQueue.TryDequeue(out var Bunch)) Bunch.Return();
         Cleanup_Transport();
         ConnectionSetFlags(NetaConnectionFlags.Cleaned);
     }

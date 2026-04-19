@@ -1,16 +1,15 @@
 ﻿using Astral.Diagnostics;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 
 namespace Astral;
 
 public static partial class Context
 {
-    static public bool IsSmtEnabled { get; private set; }
     static public int LogicalProcessorCount { get; private set; }
 
     static Context()
     {
-        IsSmtEnabled = IsSmtActive();
         LogicalProcessorCount = Math.Max(1, Environment.ProcessorCount);
         //if (GCSettings.IsServerGC)
         //{
@@ -20,22 +19,6 @@ public static partial class Context
         //{
         //    GCSettings.LatencyMode = GCLatencyMode.LowLatency;
         //}
-    }
-
-
-    public static bool IsSmtEnabledLinux()
-    {
-        // Check 'siblings' vs 'cpu cores' in /proc/cpuinfo
-        // If siblings > cpu cores, SMT is on.
-        var Lines = File.ReadAllLines("/proc/cpuinfo");
-        var Siblings = Lines.FirstOrDefault(x => x.Contains("siblings"))?.Split(':').Last().Trim();
-        var Cores = Lines.FirstOrDefault(x => x.Contains("cpu cores"))?.Split(':').Last().Trim();
-
-        if (int.TryParse(Siblings, out int S) && int.TryParse(Cores, out int C))
-        {
-            return S > C;
-        }
-        return false;
     }
 
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -101,18 +84,52 @@ public static partial class Context
     }
 
 
-    public static bool IsSmtActive()
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int sched_setaffinity(int pid, IntPtr cpusetsize, long[] mask);
+
+    [DllImport("kernel32.dll")]
+    private static extern int GetCurrentThreadId();
+
+    public static void SetThreadAffinity(int coreId)
     {
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        // 1. Hard-bind to the specific CPU core
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
         {
-            return IsSmtEnabledWindows();
+            // 16 longs * 8 bytes = 128 bytes (matches __CPU_SETSIZE of 1024 bits)
+            long[] mask = new long[16];
+
+            int blockIndex = coreId / 64;
+            int bitOffset = coreId % 64;
+            mask[blockIndex] = 1L << bitOffset;
+
+            // Use 128 as the size. This is the "magic number" for Debian/Ubuntu libc.
+            int result = sched_setaffinity(0, (IntPtr)128, mask);
+
+            if (result != 0)
+            {
+                int error = Marshal.GetLastWin32Error();
+                // If you get 22 (EINVAL), the kernel thinks 128 is the wrong size.
+                // If you get 0, it worked!
+                Console.WriteLine($"Affinity Result: {result}, Error: {error}");
+            }
         }
-        else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+        else if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
-            return IsSmtEnabledLinux();
+            IntPtr mask = new IntPtr(1L << coreId);
+            int managedId = GetCurrentThreadId();
+
+            foreach (ProcessThread pt in Process.GetCurrentProcess().Threads)
+            {
+                if (pt.Id == managedId)
+                {
+                    pt.ProcessorAffinity = mask;
+                    break;
+                }
+            }
         }
 
-        Guard.Fail("OS not supported.");
-        return false;
+        // 2. Set Highest Priority
+        Thread.CurrentThread.Priority = ThreadPriority.Highest;
     }
 }

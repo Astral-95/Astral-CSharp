@@ -5,8 +5,8 @@ namespace Astral.Tools;
 
 public sealed class WeakAction
 {
-    static long PrivateNextId = 0;
-    public long Id { get; private set; }
+    static ulong PrivateNextId = 0;
+    public ulong Id { get; private set; }
 
     public delegate void WeakActionDelegate(object Target);
 
@@ -34,7 +34,7 @@ public sealed class WeakAction
 
     public bool IsValid { get => TargetRef.Target != null; }
     public object? Target => TargetRef.Target;
-    static internal long NextId { get => Interlocked.Increment(ref PrivateNextId); }
+    static internal ulong NextId { get => Interlocked.Increment(ref PrivateNextId); }
 
     public void Invoke()
     {
@@ -98,7 +98,7 @@ public sealed class WeakAction
 public sealed class WeakAction<T>
 {
     public delegate void WeakActionDelegate(T Arg1);
-    public long Id { get; private set; }
+    public ulong Id { get; private set; }
 
     public WeakReference TargetRef;
     private readonly Action<object, T> Invoker;
@@ -189,7 +189,7 @@ public sealed class WeakAction<T1, T2>
 {
     public delegate void WeakActionDelegate(T1 Arg1, T2 Arg2);
 
-    public long Id { get; private set; }
+    public ulong Id { get; private set; }
     public WeakReference TargetRef;
     private readonly Action<object, T1, T2> Invoker;
     public MethodInfo Method;
@@ -271,7 +271,7 @@ public sealed class WeakAction<T1, T2>
 
 public sealed class WeakAction<T1, T2, T3>
 {
-    public long Id { get; private set; }
+    public ulong Id { get; private set; }
     public WeakReference TargetRef;
     private readonly Action<object, T1, T2, T3> Invoker;
     public MethodInfo Method;
@@ -360,7 +360,7 @@ public sealed class WeakAction<T1, T2, T3>
 
 public sealed class WeakAction<T1, T2, T3, T4>
 {
-    public long Id { get; private set; }
+    public ulong Id { get; private set; }
     public WeakReference TargetRef;
     private readonly Action<object, T1, T2, T3, T4> Invoker;
     public MethodInfo Method;

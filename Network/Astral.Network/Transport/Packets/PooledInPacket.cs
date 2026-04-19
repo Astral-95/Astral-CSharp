@@ -1,13 +1,21 @@
 ﻿using Astral.Containers;
+using Astral.Exceptions;
 using Astral.Network.Enums;
 using Astral.Serialization;
-using Astral.Exceptions;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace Astral.Network.Transport;
 
-public class PooledInPacket : InPacket
+public unsafe class PooledInPacket : InPacket
 {
-    private static readonly ConcurrentStore<PooledInPacket> Pool = new ConcurrentStore<PooledInPacket>();
+#if LINUX
+    [ThreadStatic]
+    private static ObjectStack<PooledInPacket> Pool;
+#else
+    private static readonly ConcurrentFastQueue<PooledInPacket> Pool = new ConcurrentFastQueue<PooledInPacket>();
+#endif
+
 
 
     static int INumTnstantiated = 0;
@@ -21,17 +29,23 @@ public class PooledInPacket : InPacket
             NumBytes = NetaConsts.BufferMaxSizeBytes;
         }
 
-        Buffer = new byte[NumBytes];
-        Pos = 0;
-        Num = 0;
+        Resize(NumBytes);
         Interlocked.Increment(ref INumTnstantiated);
     }
 
-    public static void PrePopulate(int Num)
+    public static void InitForWorker(int Preload)
     {
-        for (int i = 0; i < Num; i++)
+#if LINUX
+        if (Pool == null) Pool = new();
+#endif
+
+        for (int i = 0; i < Preload; i++)
         {
-            Pool.Add(new PooledInPacket());
+#if LINUX
+            Pool.Add(new PooledInPacket()); 
+#else
+            Pool.Enqueue(new PooledInPacket());
+#endif
         }
     }
 
@@ -57,16 +71,35 @@ public class PooledInPacket : InPacket
 
     internal static PooledInPacket Rent<T>(OutPacket PacketOut)
     {
+#if LINUX
+        if (Pool == null) Pool = new();
+#endif
+#if LINUX
         if (Pool.Take(out var Packet))
         {
             Packet.InPool = 0;
         }
+#else
+        if (Pool.TryDequeue(out var Packet))
+        {
+            Packet.InPool = 0;
+        }
+#endif
         else
         {
             Packet = new PooledInPacket();
         }
 
-        System.Buffer.BlockCopy(PacketOut.GetBuffer(), 0, Packet.Buffer, 0, PacketOut.Pos);
+        byte[] ManagedBuffer = PacketOut.GetBuffer();
+        int DataLength = PacketOut.Pos;
+
+        fixed (byte* SrcPtr = ManagedBuffer)
+        {
+            // Copy from the pinned managed buffer to our permanently pinned unmanaged Buffer
+            // Unsafe.CopyBlock is faster than System.Buffer.BlockCopy for pointer destinations
+            Unsafe.CopyBlock(Packet.Buffer, SrcPtr, (uint)DataLength);
+        }
+
         Packet.Pos = 0;
         Packet.Num = PacketOut.Pos;
         return Packet;
@@ -74,10 +107,21 @@ public class PooledInPacket : InPacket
 
     public static PooledInPacket Rent<T>()
     {
+#if LINUX
+       if (Pool == null) Pool = new();
+#endif
+
+#if LINUX
         if (!Pool.Take(out var Packet))
         {
             Packet = new PooledInPacket();
         }
+#else
+        if (!Pool.TryDequeue(out var Packet))
+        {
+            Packet = new PooledInPacket();
+        }
+#endif
         else
         {
             Packet.InPool = 0;
@@ -87,32 +131,50 @@ public class PooledInPacket : InPacket
     }
 
 
-    internal static PooledInPacket Rent(ByteWriter Writer)
+    internal static PooledInPacket Rent<T>(ByteWriter Writer)
     {
+#if LINUX
+        if (Pool == null)
+        {
+            Pool = new();
+        } 
+#endif
+
+#if LINUX
         if (!Pool.Take(out var Packet))
         {
             Packet = new PooledInPacket(Writer.Pos);
         }
+#else
+        if (!Pool.TryDequeue(out var Packet))
+        {
+            Packet = new PooledInPacket(Writer.Pos);
+        }
+#endif
         else
         {
             Packet.InPool = 0;
             Packet.Pos = 0;
+            Packet.Num = 0;
 
-            if (Packet.Buffer.Length < Writer.Pos)
-            {
-                Packet.Buffer = new byte[Writer.Pos];
-            }
+            Packet.Resize(Writer.Pos);
         }
 
-        var Reader = Packet;
+        byte[] ManagedSource = Writer.GetBuffer();
 
-        //new ReadOnlySpan<byte>(Writer.Buffer, 0, Writer.Pos).CopyTo(Reader.Buffer.AsSpan(0, Writer.Pos));
-        System.Buffer.BlockCopy(Writer.GetBuffer(), 0, Reader.Buffer, 0, Writer.Pos);
+        fixed (byte* SrcPtr = ManagedSource)
+        {
+            // Copy directly from pinned managed memory to our unmanaged pointer
+            // Using Unsafe.CopyBlock because System.Buffer.BlockCopy won't accept a byte*
+            Unsafe.CopyBlock(Packet.Buffer, SrcPtr, (uint)Writer.Pos);
+        }
 
-        Reader.Num = Writer.Pos;
+        Packet.Num = Writer.Pos;
+
         return Packet;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Return() => Return<PooledInPacket>();
 
 
@@ -120,12 +182,20 @@ public class PooledInPacket : InPacket
     {
         var Val = Interlocked.CompareExchange(ref InPool, 1, 0);
         if (Val != 0) throw new AlreadyInPoolException($"{typeof(T).Name} Attempted to return a packet that is already in the pool.");
-        Pool.Add(this);
+#if LINUX
+        Pool.Add(this); 
+#else
+        Pool.Enqueue(this);
+#endif
     }
 
     public void TryReturn()
     {
         if (Interlocked.CompareExchange(ref InPool, 1, 0) != 0) return;
-        Pool.Add(this);
+#if LINUX
+        Pool.Add(this); 
+#else
+        Pool.Enqueue(this);
+#endif
     }
 }

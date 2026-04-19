@@ -346,7 +346,7 @@ public class NetworkClass
 	{
 		OutBunch Bunch = CreateBunch<NetaChannel_EnqueueRemoteCall_Reliable>();
 		Bunch.SetIsReliable();
-		EnqeueueRemoteCall(MethodIndex, Bunch, Writer);
+		EnqeueueReliableRemoteCall(MethodIndex, Bunch, Writer);
 	}
 
 	class NetaChannel_EnqueueRemoteCall_ReliableOrdered { }
@@ -355,9 +355,10 @@ public class NetworkClass
 		OutBunch Bunch = CreateBunch<NetaChannel_EnqueueRemoteCall_ReliableOrdered>();
 		Bunch.SetIsReliable();
 		Bunch.SetIsOrdered();
-		EnqeueueRemoteCall(MethodIndex, Bunch, Writer);
+		EnqeueueReliableRemoteCall(MethodIndex, Bunch, Writer);
 	}
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
 	void EnqeueueRemoteCall(int MethodIndex, OutBunch Bunch, PooledNetByteWriter? Writer)
 	{
 		Bunch.SerializeObject(this);
@@ -374,6 +375,25 @@ public class NetworkClass
 
 		Bunch.FinalizeBunch();
 		Connection.SendBunch(Bunch);
+	}
+    
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    void EnqeueueReliableRemoteCall(int MethodIndex, OutBunch Bunch, PooledNetByteWriter? Writer)
+	{
+		Bunch.SerializeObject(this);
+		Bunch.Serialize(MethodIndex);
+		if (Writer != null)
+		{
+            foreach (var RefObj in Writer.ReferencedObjects)
+            {
+                if (!Connection.PackageMap.ObjectIdMappings.ContainsKey(RefObj)) Connection.PackageMap.MapObject(RefObj);
+            }
+			Bunch.Serialize(Writer);
+			Writer.Return();
+		}
+
+		Bunch.FinalizeBunch();
+		Connection.SendReliableBunch(Bunch);
 	}";
     }
 
@@ -519,6 +539,7 @@ using Astral.Network.Drivers;
 using Astral.Network.Transport;
 using Astral.Network.Interfaces;
 using Astral.Network.Serialization;
+using System.Runtime.CompilerServices;
 
 using System.Collections.Concurrent;
 

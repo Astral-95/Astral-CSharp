@@ -1,4 +1,5 @@
 ﻿using Astral.Interfaces;
+using System.Diagnostics.CodeAnalysis;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -52,6 +53,16 @@ public unsafe class ByteWriter
         Buffer = new byte[InitialSizeBytes];
         Num = InitialSizeBytes;
         Pos = 0;
+    }
+
+    public ByteWriter(ByteWriter Writer)
+    {
+        Buffer = new byte[Writer.Buffer.Length];
+
+        Array.Copy(Writer.Buffer, 0, Buffer, 0, Writer.Pos);
+
+        Num = Writer.Num;
+        Pos = Writer.Pos;
     }
 
     public virtual void Reset(Int32 MinBytes = 64)
@@ -177,12 +188,22 @@ public unsafe class ByteWriter
         for (int i = 0; i < Count; i++)
             Serialize(Array[i]); // each string is already byte-aligned
     }
+
+    [DoesNotReturn]
+    private static void ThrowOutOfBounds(int start, int len, uint total)
+    => throw new ArgumentOutOfRangeException($"Bounds check failed: {start} + {len} > {total}");
+
     public void Serialize<TElementType>(TElementType[] Array, int StartByte, int LengthBytes) where TElementType : unmanaged
     {
         ArgumentNullException.ThrowIfNull(Array);
 
-        if (StartByte < 0 || LengthBytes < 1 || StartByte + LengthBytes > Array.Length * sizeof(TElementType))
-            throw new ArgumentOutOfRangeException($"StartByte < 0 || LengthBytes < 1 || StartByte + LengthBytes > Array.Length * sizeof(TElementType))\nStartByte: [{StartByte}] LengthBytes: [{LengthBytes}] StartByte + LengthBytes: [{StartByte + LengthBytes}] Array.Length * sizeof({typeof(TElementType).Name}): [{Array.Length * sizeof(TElementType)}]");
+        uint totalSize = (uint)(Array.Length * sizeof(TElementType));
+        if ((uint)StartByte >= totalSize || (uint)LengthBytes > totalSize - (uint)StartByte)
+        {
+            ThrowOutOfBounds(StartByte, LengthBytes, totalSize);
+        }
+        //if (StartByte < 0 || LengthBytes < 1 || StartByte + LengthBytes > Array.Length * sizeof(TElementType))
+            //throw new ArgumentOutOfRangeException($"StartByte < 0 || LengthBytes < 1 || StartByte + LengthBytes > Array.Length * sizeof(TElementType))\nStartByte: [{StartByte}] LengthBytes: [{LengthBytes}] StartByte + LengthBytes: [{StartByte + LengthBytes}] Array.Length * sizeof({typeof(TElementType).Name}): [{Array.Length * sizeof(TElementType)}]");
 
         EnsureCapacity(LengthBytes);
 
@@ -258,6 +279,22 @@ public unsafe class ByteWriter
 
         Pos += LengthBytes;
     }
+
+    public void Serialize<TElementType>(ReadOnlySpan<TElementType> Container, int StartByte, int LengthBytes) where TElementType : unmanaged
+    {
+        if (StartByte < 0 || LengthBytes < 1 || StartByte + LengthBytes > Container.Length * sizeof(TElementType))
+            throw new ArgumentOutOfRangeException($"StartByte < 0 || LengthBytes < 1 || StartByte + LengthBytes > Array.Length * sizeof(TElementType))\nStartByte: [{StartByte}] LengthBytes: [{LengthBytes}] StartByte + LengthBytes: [{StartByte + LengthBytes}] Array.Length * sizeof({typeof(TElementType).Name}): [{Container.Length * sizeof(TElementType)}]");
+
+        EnsureCapacity(LengthBytes);
+
+        fixed (TElementType* SrcPtr = Container)
+        fixed (byte* DstPtr = Buffer)
+        {
+            Unsafe.CopyBlock(DstPtr + Pos, (byte*)SrcPtr + StartByte, (uint)LengthBytes);
+        }
+
+        Pos += LengthBytes;
+    }
     #endregion
 
 
@@ -269,6 +306,11 @@ public unsafe class ByteWriter
     public void Serialize(ByteReader Reader)
     {
         Serialize(Reader.GetBuffer(), Reader.Pos, Reader.Num - Reader.Pos);
+    }
+
+    public void Serialize(UnmanagedByteReader Reader)
+    {
+        Serialize(Reader.AsReadOnlySpan(), Reader.Pos, Reader.Num - Reader.Pos);
     }
 
 

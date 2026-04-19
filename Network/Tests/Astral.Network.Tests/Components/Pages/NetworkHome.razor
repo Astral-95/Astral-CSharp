@@ -288,7 +288,7 @@
 	}
 
 
-	long TickId = -1;
+	TickHandle TickHandle = default;
 	//void StartReadTask()
 	//{
 	//	if (ReadTask != null) return;
@@ -305,15 +305,14 @@
 
 	void StartReadTask()
 	{
-		if (TickId != -1) return;
-		TickId = ParallelTickManager.Register(ReadTick, 5);
+		if (TickHandle.IsValid()) return;
+		TickHandle = ParallelTickManager.Register(ReadTick, 5);
 	}
 
 	void StopReadLoopAsync()
 	{
-		if (TickId == -1) return;
-		ParallelTickManager.Unregister(TickId);
-		TickId = -1;
+		if (!TickHandle.IsValid()) return;
+		ParallelTickManager.Unregister(ref TickHandle);
 	}
 
 	void ReadTick()
@@ -335,13 +334,10 @@
 			else
 			{
 				ServerSnapShot.Reset();
-				ServerNumClients = NetCodeTest.Instance.Server.NumClientsConnected;
-				foreach (var Connections in NetCodeTest.Instance.Server.WorkerClientConnections)
+				ServerNumClients = NetCodeTest.Instance.Server.ClientConnections.NumConnected;
+				foreach (var Connection in NetCodeTest.Instance.Server.ClientConnections)
 				{
-					foreach (var Client in Connections)
-					{
-						ServerSnapShot.Add(Client.PacketStats);
-					}
+					ServerSnapShot.Add(Connection.PacketStats);
 				}
 			}
 
@@ -392,13 +388,10 @@
 				else
 				{
 					ServerSnapShot.Reset();
-					ServerNumClients = NetCodeTest.Instance.Server.NumClientsConnected;
-					foreach (var Connections in NetCodeTest.Instance.Server.WorkerClientConnections)
+					ServerNumClients = NetCodeTest.Instance.Server.ClientConnections.NumConnected;
+					foreach (var Connection in NetCodeTest.Instance.Server.ClientConnections)
 					{
-						foreach (var Client in Connections)
-						{
-							ServerSnapShot.Add(Client.PacketStats);
-						}
+						ServerSnapShot.Add(Connection.PacketStats);
 					}
 				}
 
@@ -587,12 +580,9 @@
 
 		if (NetCodeTest.Instance.Server != null)
 		{
-			foreach (var Connections in NetCodeTest.Instance.Server.WorkerClientConnections)
+			foreach (var Connection in NetCodeTest.Instance.Server.ClientConnections)
 			{
-				foreach (var Client in Connections)
-				{
-					Client.PacketStats.Reset();
-				}
+				Connection.PacketStats.Reset();
 			}
 		}
 

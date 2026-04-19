@@ -2,14 +2,21 @@
 using Astral.Logging;
 using Astral.Tools;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 namespace Astral.Tick;
 
+public readonly struct TickHandle
+{
+    internal readonly ulong Id;
+    internal TickHandle(ulong Id) { this.Id = Id; }
+    public bool IsValid() { return Id != 0; }
+}
 public readonly struct ParallelTickHandle
 {
-    internal readonly long Id;
-    internal ParallelTickHandle(long Id) { this.Id = Id; }
+    internal readonly ulong Id;
+    internal ParallelTickHandle(ulong Id) { this.Id = Id; }
     public bool IsValid() { return Id != 0; }
 }
 
@@ -129,118 +136,75 @@ public static class ParallelTickManager
     public static long NumTicks { get; private set; }
     public static long LastTick { get; private set; }
 
-    public static long PrivateThisTickTicks;
-    public static long ThisTickTicks { get => Volatile.Read(ref PrivateThisTickTicks); }
+    static long ILastFrameTicks;
+    static long ISmoothedLastFrameTicks;
 
-    public static long PrivateCurrentDeltaTicks;
-    public static long CurrentDeltaTicks { get => Volatile.Read(ref PrivateCurrentDeltaTicks); }
+    static long ILastFrameTime;
+    static long ISmoothedLastFrameTime;
+    public static long SmoothedLastFrameTime { get => ISmoothedLastFrameTime; }
 
-    private static readonly Dictionary<long, WorkerActionIndex> IdToIndex = new();
+
+    static long IThisTickTicks;
+    public static long ThisTickTicks { get => Volatile.Read(ref IThisTickTicks); }
+
+
+    private static readonly Dictionary<ulong, WorkerActionIndex> IdToIndex = new();
     private static readonly List<TickRegisterForm> ToAdd = new();
-    private static readonly List<long> ToRemoveIds = new();
+    private static readonly List<ulong> ToRemoveIds = new();
 
-    private static readonly Dictionary<long, int> ParallelIdToIndex = new();
+    private static readonly Dictionary<ulong, int> ParallelIdToIndex = new();
     private static readonly List<ParallelTickRegisterForm> ParallelToAdd = new();
-    private static readonly List<long> ParallelToRemoveIds = new();
+    private static readonly List<ulong> ParallelToRemoveIds = new();
 
 
     public static Action? OnMasterInit { get; set; }
 
     public delegate void WorkerInitHandler(int WorkerIndex);
-    public static WorkerInitHandler? OnWorkerInit { get; set; }
+    public static WorkerInitHandler OnWorkerInit { get; set; }
 
     public static Action<string>? OnWarn { get; set; }
     public static Action<string>? OnError { get; set; }
     public static Action<string>? OnFault { get; set; }
 
     [ThreadStatic]
-    static int IWorkerIndex = -1;
+    static int? IWorkerIndex;
 
-    static public int WorkerIndex { get => IWorkerIndex; }
+    static public int WorkerIndex { get => IWorkerIndex ?? - 1; }
 
     static bool bInitialized = false;
 
     static ParallelTickManager()
     {
-        if (Context.IsSmtEnabled)
+        if (Context.LogicalProcessorCount < 4)
         {
-            if (Context.LogicalProcessorCount < 4) // If less than 2 cores
-            {
-                PrivateWorkerCount = 1;
-                MasterProcessorIndex = 1;
-                WorkerProcessorStartIndex = 1;
-            }
-            else if (Context.LogicalProcessorCount < 6) // If less than 3 cores
-            {
-                PrivateWorkerCount = 1;
-                MasterProcessorIndex = 3;
-                WorkerProcessorStartIndex = 3;
-            }
-            else
-            {
-                PrivateWorkerCount = Context.LogicalProcessorCount - 4;
-                MasterProcessorIndex = 3;
-                WorkerProcessorStartIndex = 4;
-            }
+            PrivateWorkerCount = 1;
+            MasterProcessorIndex = 1;
+            WorkerProcessorStartIndex = 1;
+        }
+        else if (Context.LogicalProcessorCount < 6)
+        {
+            PrivateWorkerCount = 1;
+            MasterProcessorIndex = 3;
+            WorkerProcessorStartIndex = 3;
+        }
+        else if (Context.LogicalProcessorCount < 8)
+        {
+            PrivateWorkerCount = 2;
+            MasterProcessorIndex = 4;
+            WorkerProcessorStartIndex = 6;
         }
         else
         {
-            if (Context.LogicalProcessorCount < 2) // If less than 2 cores
-            {
-                PrivateWorkerCount = 1;
-                MasterProcessorIndex = 0;
-                WorkerProcessorStartIndex = 0;
-            }
-            else if (Context.LogicalProcessorCount < 3) // If less than 3 cores
-            {
-                PrivateWorkerCount = 1;
-                MasterProcessorIndex = 1;
-                WorkerProcessorStartIndex = 1;
-            }
-            else
-            {
-                PrivateWorkerCount = Context.LogicalProcessorCount - 2;
-                MasterProcessorIndex = 1;
-                WorkerProcessorStartIndex = 2;
-            }
+            PrivateWorkerCount = Context.LogicalProcessorCount - 6;
+            MasterProcessorIndex = 4;
+            WorkerProcessorStartIndex = 6;
         }
 
         StartBarrier = new Barrier(PrivateWorkerCount + 1);
         EndBarrier = new Barrier(PrivateWorkerCount + 1);
     }
 
-    [DllImport("libc", SetLastError = true)]
-    private static extern int sched_setaffinity(int pid, IntPtr cpusetsize, ref ulong cpuset);
-
-    [DllImport("kernel32.dll")]
-    private static extern int GetCurrentThreadId();
-
-    public static void SetThreadAffinity(int coreId)
-    {
-        // 1. Hard-bind to the specific CPU core
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-        {
-            ulong mask = 1UL << coreId;
-            sched_setaffinity(0, (IntPtr)128, ref mask);
-        }
-        else if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-        {
-            IntPtr mask = new IntPtr(1L << coreId);
-            int managedId = GetCurrentThreadId();
-
-            foreach (ProcessThread pt in Process.GetCurrentProcess().Threads)
-            {
-                if (pt.Id == managedId)
-                {
-                    pt.ProcessorAffinity = mask;
-                    break;
-                }
-            }
-        }
-
-        // 2. Set Highest Priority
-        Thread.CurrentThread.Priority = ThreadPriority.Highest;
-    }
+    
 
     public static void Initialize()
     {
@@ -310,7 +274,7 @@ public static class ParallelTickManager
             // ---------- 3. Check for extra entries in IdToIndex ----------
             foreach (var kv in IdToIndex)
             {
-                long id = kv.Key;
+                var id = kv.Key;
                 var Mapping = kv.Value;
 
                 ref var Worker = ref Workers[Mapping.WorkerIndex];
@@ -361,13 +325,13 @@ public static class ParallelTickManager
     }
 
 
-    public static long Register(Action Action, double Hz = 60, int Group = 60, int WorkerIndex = -1)
+    public static TickHandle Register(Action Action, double Hz = 60, int Group = 60, int WorkerIndex = -1)
     {
         var Weak = new WeakAction(Action);
-        var Id = Weak.Id;
+        var Handle = new TickHandle(Weak.Id);
         if (Hz < 0.0)
         {
-            return -1;
+            return default;
         }
         lock (Lock)
         {
@@ -383,68 +347,72 @@ public static class ParallelTickManager
 #endif
             ToAdd.Add(new TickRegisterForm(WorkerIndex, Hz, Group, Weak));
         }
-        return Id;
+        return Handle;
     }
 
 
-    public static void Unregister(long Id)
+    public static void Unregister(ref TickHandle Handle)
     {
+        var HandleId = Handle.Id;
         lock (Lock)
         {
             // 1. Remove from pending adds
-            int ToAddIndex = ToAdd.FindIndex(f => f.Action.Id == Id);
+            int ToAddIndex = ToAdd.FindIndex(f => f.Action.Id == HandleId);
             if (ToAddIndex >= 0)
             {
                 ToAdd.RemoveAt(ToAddIndex);
-                Guard.Assert(!IdToIndex.ContainsKey(Id));
+                Guard.Assert(!IdToIndex.ContainsKey(Handle.Id));
                 return;
             }
 
-            if (ToRemoveIds.Contains(Id))
+            if (ToRemoveIds.Contains(Handle.Id))
             {
-                OnWarn?.Invoke($"Tried to unregister tick [{Id}] but it's already marked for removal.");
+                OnWarn?.Invoke($"Tried to unregister tick [{Handle.Id}] but it's already marked for removal.");
                 return;
             }
 
             // 2. Mark for removal if committed
-            if (IdToIndex.ContainsKey(Id))
+            if (IdToIndex.ContainsKey(Handle.Id))
             {
-                ToRemoveIds.Add(Id);
+                ToRemoveIds.Add(Handle.Id);
+                Handle = default;
                 return;
             }
 
             // 3. If not in ToAdd or IdToIndex, warn
-            OnWarn?.Invoke($"Tried to unregister tick [{Id}] but it was not registered.");
+            OnWarn?.Invoke($"Tried to unregister tick [{Handle.Id}] but it was not registered.");
         }
     }
-    public static void Unregister<T>(long Id)
+    public static void Unregister<T>(ref TickHandle Handle)
     {
+        var HandleId = Handle.Id;
         lock (Lock)
         {
             // 1. Remove from pending adds
-            int ToAddIndex = ToAdd.FindIndex(f => f.Action.Id == Id);
+            int ToAddIndex = ToAdd.FindIndex(f => f.Action.Id == HandleId);
             if (ToAddIndex >= 0)
             {
                 ToAdd.RemoveAt(ToAddIndex);
-                Guard.Assert(!IdToIndex.ContainsKey(Id), $"{typeof(T).Name}");
+                Guard.Assert(!IdToIndex.ContainsKey(Handle.Id), $"{typeof(T).Name}");
                 return;
             }
 
-            if (ToRemoveIds.Contains(Id))
+            if (ToRemoveIds.Contains(Handle.Id))
             {
-                OnWarn?.Invoke($"{typeof(T).Name} tried to unregister tick [{Id}] but it's already marked for removal.");
+                OnWarn?.Invoke($"{typeof(T).Name} tried to unregister tick [{Handle.Id}] but it's already marked for removal.");
                 return;
             }
 
             // 2. Mark for removal if committed
-            if (IdToIndex.ContainsKey(Id))
+            if (IdToIndex.ContainsKey(Handle.Id))
             {
-                ToRemoveIds.Add(Id);
+                ToRemoveIds.Add(Handle.Id);
+                Handle = default;
                 return;
             }
 
             // 3. If not in ToAdd or IdToIndex, warn
-            OnWarn?.Invoke($"{typeof(T).Name} tried to unregister tick [{Id}] but it was not registered.");
+            OnWarn?.Invoke($"{typeof(T).Name} tried to unregister tick [{Handle.Id}] but it was not registered.");
         }
     }
 
@@ -532,7 +500,7 @@ public static class ParallelTickManager
                 }
 
                 ref var Wrapper = ref Worker.ActionWrappers[Worker.NumActions];
-                Wrapper = new TickActionWrapper(Form, PrivateThisTickTicks);
+                Wrapper = new TickActionWrapper(Form, IThisTickTicks);
 
                 IdToIndex[Form.Action.Id] = new WorkerActionIndex(Index, Worker.NumActions);
                 Worker.NumActions++;
@@ -540,7 +508,7 @@ public static class ParallelTickManager
             }
             ToAdd.Clear();
 
-            foreach (long Id in ToRemoveIds)
+            foreach (var Id in ToRemoveIds)
             {
                 if (!IdToIndex.Remove(Id, out var Mapping))
                 {
@@ -609,13 +577,13 @@ public static class ParallelTickManager
                     Array.Resize(ref ThisTickParallelActions, ParallelActions.Length * 2);
                 }
 
-                ParallelActions[ParallelCount] = new TickActionWrapper(ParallelForm, PrivateThisTickTicks);
+                ParallelActions[ParallelCount] = new TickActionWrapper(ParallelForm, IThisTickTicks);
                 ParallelIdToIndex[ParallelForm.Action.Id] = ParallelCount;
                 ParallelCount++;
             }
             ParallelToAdd.Clear();
 
-            foreach (long ParallelId in ParallelToRemoveIds)
+            foreach (var ParallelId in ParallelToRemoveIds)
             {
                 if (!ParallelIdToIndex.Remove(ParallelId, out int ParallelIndex))
                 {
@@ -719,24 +687,28 @@ public static class ParallelTickManager
     {
         try
         {
-            SetThreadAffinity(MasterProcessorIndex);
+            Context.SetThreadAffinity(MasterProcessorIndex);
 
             try { OnMasterInit?.Invoke(); }
             catch { }
 
-            long MaxExpectedTicks = (long)(TickIntervalTicks * 100); // tolerance threshold
+            long MaxExpectedTicks = (long)(TickIntervalTicks * 100); // warning tolerance threshold
 
             while (!Token.IsCancellationRequested)
             {
                 CommitPendingChanges();
-                Volatile.Write(ref PrivateThisTickTicks, Context.Ticks);
-                Volatile.Write(ref PrivateCurrentDeltaTicks, PrivateThisTickTicks - LastTick);
+                Volatile.Write(ref IThisTickTicks, Context.Ticks);
+                Volatile.Write(ref ILastFrameTicks, IThisTickTicks - LastTick);
 
-                if (PrivateCurrentDeltaTicks > MaxExpectedTicks)
+                // 1.56% New, 98.44% Old (Shift 6)
+                ISmoothedLastFrameTicks = (ISmoothedLastFrameTicks - (ISmoothedLastFrameTicks >> 6)) + (ILastFrameTicks >> 6);
+                ISmoothedLastFrameTime = (long)(ISmoothedLastFrameTicks * Context.Clock.TicksToMs);
+
+                if (ILastFrameTicks > MaxExpectedTicks)
                 {
-                    double OverdueMs = PrivateCurrentDeltaTicks * Context.Clock.TicksToMs;
+                    double OverdueMs = ILastFrameTicks * Context.Clock.TicksToMs;
                     AstralLoggingCenter.Log("TickManager", ELogLevel.Warning,
-                        $"Tick execution exceeded schedule by {OverdueMs:F2}ms");
+                        $"Tick execution exceeded schedule by {OverdueMs:F2}ms - Smoothed: {ISmoothedLastFrameTime}");
                 }
 
                 ThisTickParallelCount = 0;
@@ -745,11 +717,11 @@ public static class ParallelTickManager
                 {
                     ref var ParallelWrapper = ref ParallelActions[i];
 
-                    if (ParallelWrapper.DeadlineTicks >= PrivateThisTickTicks)
+                    if (ParallelWrapper.DeadlineTicks >= IThisTickTicks)
                     {
                         continue;
                     }
-                    ParallelWrapper.DeadlineTicks = PrivateThisTickTicks + ParallelWrapper.HzTicks;
+                    ParallelWrapper.DeadlineTicks = IThisTickTicks + ParallelWrapper.HzTicks;
                     ThisTickParallelActions[ThisTickParallelCount++] = ParallelWrapper;
                 }
 
@@ -770,12 +742,12 @@ public static class ParallelTickManager
                 //
                 //StartSignal.Reset(); // Prepare for next tick
 
-                LastTick = PrivateThisTickTicks;
+                LastTick = IThisTickTicks;
 
                 NumTicks++;
 
                 // Reschedule next tick (drift compensated)
-                long TargetTicks = PrivateThisTickTicks + (long)TickIntervalTicks;
+                long TargetTicks = IThisTickTicks + (long)TickIntervalTicks;
 
                 Wait(TargetTicks);
             }
@@ -803,15 +775,7 @@ public static class ParallelTickManager
 
     private static void WorkerLoop(int WorkerIndex)
     {
-        if (Context.IsSmtEnabled)
-        {
-            //SetThreadAffinity(WorkerProcessorStartIndex + WorkerIndex * 2);
-            SetThreadAffinity(WorkerProcessorStartIndex + WorkerIndex);
-        }
-        else
-        {
-            SetThreadAffinity(WorkerProcessorStartIndex + WorkerIndex);
-        }
+        Context.SetThreadAffinity(WorkerProcessorStartIndex + WorkerIndex);
 
         IWorkerIndex = WorkerIndex;
 
@@ -831,7 +795,8 @@ public static class ParallelTickManager
                     if (!ParallelWrapper.Action!.IsValid)
                     {
                         OnWarn?.Invoke($"An invalid parallel action found while ticking, Action Id: {ParallelWrapper.Action.Id}");
-                        Unregister(ParallelWrapper.Action.Id);
+                        var Handle = new TickHandle(ParallelWrapper.Action.Id);
+                        Unregister(ref Handle);
                     }
                     else
                     {
@@ -841,7 +806,8 @@ public static class ParallelTickManager
                         }
                         catch (Exception Ex)
                         {
-                            Unregister(ParallelWrapper.Action.Id);
+                            var Handle = new TickHandle(ParallelWrapper.Action.Id);
+                            Unregister(ref Handle);
                             OnError?.Invoke($"ParallelTick for [{ParallelWrapper.Action.Target?.ToString()}.{ParallelWrapper.Action.Method.Name}] threw an exception and has been marked for removal. Ex: {Ex}");
                         }
                     }
@@ -853,17 +819,18 @@ public static class ParallelTickManager
                 {
                     ref var Wrapper = ref Worker.ActionWrappers[i];
 
-                    if (Wrapper.DeadlineTicks >= PrivateThisTickTicks)
+                    if (Wrapper.DeadlineTicks >= IThisTickTicks)
                     {
                         continue;
                     }
 
-                    Wrapper.DeadlineTicks = PrivateThisTickTicks + Wrapper.HzTicks;
+                    Wrapper.DeadlineTicks = IThisTickTicks + Wrapper.HzTicks;
 
                     if (!Wrapper.Action!.IsValid)
                     {
                         OnWarn?.Invoke($"An invalid action found while ticking, Action Id: {Wrapper.Action.Id}");
-                        Unregister(Wrapper.Action.Id);
+                        var Handle = new TickHandle(Wrapper.Action.Id);
+                        Unregister(ref Handle);
                     }
                     else
                     {
@@ -873,7 +840,8 @@ public static class ParallelTickManager
                         }
                         catch (Exception Ex)
                         {
-                            Unregister(Wrapper.Action.Id);
+                            var Handle = new TickHandle(Wrapper.Action.Id);
+                            Unregister(ref Handle);
                             OnError?.Invoke($"Tick for [{Wrapper.Action.Target?.ToString()}.{Wrapper.Action.Method.Name}] threw an exception and has been marked for removal. Ex: {Ex}");
                         }
                     }
@@ -907,4 +875,12 @@ public static class ParallelTickManager
             }
         }
     }
+
+
+
+
+
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int GetWorkerIndexForHash(uint Hash) => (int)(Hash & 0x7FFFFFFF) % PrivateWorkerCount;
 }

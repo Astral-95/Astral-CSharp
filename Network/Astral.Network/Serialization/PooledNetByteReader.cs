@@ -9,7 +9,7 @@ namespace Astral.Network.Serialization;
 public sealed class PooledNetByteReader : NetByteReader
 {
     int InPool = 0;
-    private static readonly ConcurrentStore<PooledNetByteReader> Pool = new ConcurrentStore<PooledNetByteReader>();
+    private static readonly ConcurrentFastQueue<PooledNetByteReader> Pool = new ConcurrentFastQueue<PooledNetByteReader>();
 
     internal PooledNetByteReader() { }
 
@@ -47,7 +47,7 @@ public sealed class PooledNetByteReader : NetByteReader
     public static long GetPoolSize() { return Pool.Count; }
     public static PooledNetByteReader Rent(int NumBytes = NetaConsts.BufferMaxSizeBytes)
     {
-        if (!Pool.Take(out var Reader))
+        if (!Pool.TryDequeue(out var Reader))
         {
             Reader = new PooledNetByteReader();
             Reader.Buffer = ArrayPool<byte>.Shared.Rent(NumBytes);
@@ -68,7 +68,7 @@ public sealed class PooledNetByteReader : NetByteReader
 
     public static PooledNetByteReader Rent(ByteWriter Writer)
     {
-        if (!Pool.Take(out var Reader))
+        if (!Pool.TryDequeue(out var Reader))
         {
             Reader = new PooledNetByteReader(Writer);
             Reader.Buffer = ArrayPool<byte>.Shared.Rent(NetaConsts.BufferMaxSizeBytes);
@@ -102,7 +102,7 @@ public sealed class PooledNetByteReader : NetByteReader
     {
         InReader.ValidateRead(LengthBits);
 
-        if (!Pool.Take(out var Reader))
+        if (!Pool.TryDequeue(out var Reader))
         {
             Reader = new PooledNetByteReader(InReader, LengthBits);
             PooledObjectsTracker.OnNewPoolObject();
@@ -122,7 +122,7 @@ public sealed class PooledNetByteReader : NetByteReader
     {
         InReader.ValidateRead(LengthBits);
 
-        if (!Pool.Take(out var Reader))
+        if (!Pool.TryDequeue(out var Reader))
         {
             Reader = new PooledNetByteReader(PackageMap, InReader, LengthBits);
             PooledObjectsTracker.OnNewPoolObject();
@@ -186,7 +186,7 @@ public sealed class PooledNetByteReader : NetByteReader
         PooledObjectsTracker.Unregister(this);
 #endif
         PackageMap = null;
-        Pool.Add(this);
+        Pool.Enqueue(this);
     }
 
 

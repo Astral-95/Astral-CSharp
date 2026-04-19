@@ -7,6 +7,7 @@ using Astral.Tick;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 namespace Astral.Network.Servers;
@@ -18,17 +19,19 @@ public partial class NetaServer
     public CancellationTokenSource Cts { get; private set; }
 
     //NetaSocket Socket { get; set; }
-    internal List<NetaSocket> Sockets { get; set; } = new List<NetaSocket>();
 
-    public NetaConnectionMode Mode { get; private set; }
-    ParallelTickHandle ParallelTickHandle;
+#if !LINUX
+    internal NetaSocket Socket { get; set; }
+#else
+    internal List<NetaSocket> Sockets { get; set; } = new List<NetaSocket>(); 
+#endif
+
+    TickHandle[] TickHandles;
 
 
     public event Action<NetaConnection>? OnConnectionClosed;
 
-
-    public int NumClientsConnected = 0;
-
+    public ClientConnections ClientConnections { get; private set; } = new ClientConnections(ParallelTickManager.WorkerCount, 1024);
     public ConcurrentDictionary<EndPoint, ClientConnection> EndPointPendingConnectionMap { get; internal set; } = new();
     //public HashSet<EndPoint> BlockedEndPoints { get; internal set; } = new();
 
@@ -46,10 +49,9 @@ public partial class NetaServer
         for (int i = 0; i < WorkerConnectTasks.Length; i++) WorkerConnectTasks[i] = [];
         for (int i = 0; i < WorkerConnectTaskLocks.Length; i++) WorkerConnectTaskLocks[i] = new();
         for (int i = 0; i < WorkerConnectionRemoveQueue.Length; i++) WorkerConnectionRemoveQueue[i] = [];
-        for (int i = 0; i < WorkerOutgoingQueue.Length; i++) WorkerOutgoingQueue[i] = [];
-        for (int i = 0; i < WorkerClientConnections.Length; i++) WorkerClientConnections[i] = [];
-
-
+#if LINUX
+        for (int i = 0; i < WorkerOutgoingQueue.Length; i++) WorkerOutgoingQueue[i] = []; 
+#endif
     }
     protected virtual AstralLogger CreateLogger()
     {
@@ -81,74 +83,89 @@ public partial class NetaServer
             S.SetRawSocketOption(1, 512, BitConverter.GetBytes(1));
         }
     }
-    public void Init(NetaDriver Driver, IPEndPoint LocalEndPoint, NetaConnectionMode Mode, PacketStatistics? PktStats = null, int RecBufferSize = 16 * 1024 * 1024, int SendBufferSize = 16 * 1024 * 1024)
+    public void Init(NetaDriver Driver, IPEndPoint LocalEndPoint, PacketStatistics? PktStats = null, int RecBufferSize = 128 * 1024 * 1024, int SendBufferSize = 128 * 1024 * 1024)
     {
         Cts = new CancellationTokenSource();
         Logger = CreateLogger();
         this.Driver = Driver;
         Driver.Server = this;
-        this.Mode = Mode;
 
         if (PktStats == null) PktStats = new PacketStatistics();
         PacketStats = PktStats;
 
         Initialize_Transport(LocalEndPoint, RecBufferSize, SendBufferSize);
 
-
-
-        //Socket = new(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp)
-        //{
-        //	//Socket.DualMode = true;
-        //
-        //	ReceiveBufferSize = RecBufferSize,
-        //	SendBufferSize = SendBufferSize
-        //};		
-        //
-        //Socket.Bind(LocalEndPoint);
+        TickHandles = new TickHandle[ParallelTickManager.WorkerCount];
     }
 
 
 
     public void Start()
     {
-        switch (Mode)
+        Start_Transport();
+
+        for (int i = 0; i < ParallelTickManager.WorkerCount; i++)
         {
-            case NetaConnectionMode.Auto: StartAuto(); break;
-            case NetaConnectionMode.AutoDeferred: StartAutoDeferred(); break;
-            case NetaConnectionMode.Manual: break;
-            default: throw new InvalidOperationException();
+            TickHandles[i] = ParallelTickManager.Register(ParallelTick, WorkerIndex: i);
         }
     }
 
 
-    void StartAuto()
+    public void ParallelTick()
     {
-        throw new NotImplementedException();
+        int WorkerIndex = ParallelTickManager.WorkerIndex;
+
+        if (ShutdownRequested)
+        {
+            Cleanup(WorkerIndex);
+            return;
+        }
+
+        ParallelTick_Transport(WorkerIndex);
     }
 
 
-    void StartAutoDeferred()
-    {
-        Start_TransportReceiver();
-        ParallelTickHandle = ParallelTickManager.RegisterParallelTick(ParallelTick);
-    }
 
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private int GetWorkerIndexForAddress(SocketAddress Address)
+    {
+        // SocketAddress layout: [0-1] Family, [2-3] Port, [4-7] IP...
+        // We hash the port and last part of IP for a quick spread
+        int Hash = 0;
+        unsafe
+        {
+            // Access the raw buffer inside SocketAddress via pointer if possible,
+            // or just use the indexer. Indexer is safer but slightly slower.
+            Hash = Address[2] | (Address[3] << 8) | (Address[4] << 16) | (Address[5] << 24);
+        }
+
+        // Ensure positive result and modulo
+        return (Hash & 0x7FFFFFFF) % ParallelTickManager.WorkerCount;
+    }
 
 
     public void Shutdown()
     {
         if (ShutdownRequested) return;
         Cts.Cancel();
-        ShutdownRequested = true;
-        if (ParallelTickHandle.IsValid()) ParallelTickManager.UnregisterParallelTick(ParallelTickHandle);
+        ShutdownRequested = true;      
 
         Shutdown_Transport();
+        ClientConnections.Shutdown();
+    }
 
-        var MapSnapshot = EndPointConnectionMap.ToArray();
-        foreach (var Pair in MapSnapshot)
+    protected void Cleanup(int WorkerIndex)
+    {
+        ref var Handle = ref TickHandles[WorkerIndex];
+
+        if (!Handle.IsValid())
         {
-            Pair.Value.Shutdown();
+            NetGuard.Fail("Test");
         }
+
+        ParallelTickManager.Unregister(ref Handle);
+        Cleanup_Transport(WorkerIndex);
     }
 
     public async Task WaitForCompletionAsync()
@@ -163,16 +180,6 @@ public partial class NetaServer
             }
         }
 
-        foreach (var Kvp in EndPointConnectionMap)
-        {
-            await Kvp.Value.WaitForCompletionAsync();
-        }
-
-        foreach (var Clients in WorkerClientConnections)
-        {
-            Clients.Clear();
-        }
-
-        EndPointConnectionMap.Clear();
+        await ClientConnections.WaitForCompletionAsync();
     }
 }

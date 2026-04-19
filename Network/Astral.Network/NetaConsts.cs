@@ -50,7 +50,7 @@ public static class NetaConsts
 
     //public const int FragPayloadMaxSizeBytes = BufferMaxSizeBytes - (HeaderSizeBytes + PartialHeaderSizeBytes);
 
-    public const int BufferMaxSizeBytes = 1024;
+    public const int BufferMaxSizeBytes = 1350;
 
     public const int AckPiggybackMaxCount = BufferMaxSizeBytes / AckSizeBytes / 2;
     public const int AckPerPacketMaxCount = (int)(BufferMaxSizeBytes / AckSizeBytes / 1.5f);

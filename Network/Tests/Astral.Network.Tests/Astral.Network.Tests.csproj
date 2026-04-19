@@ -16,7 +16,7 @@
   </ItemGroup>
 	
   <ItemGroup>
-    <ProjectReference Include="..\..\..\0_Core\Astral\Astral.csproj" />
+    <ProjectReference Include="..\..\..\Core\Astral\Astral.csproj" />
     <ProjectReference Include="..\..\Astral.Network\Astral.Network.csproj" />
   </ItemGroup>
 	
